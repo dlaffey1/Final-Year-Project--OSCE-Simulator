@@ -1,0 +1,14 @@
+specify case by specificity - specialised mode
+headache cases as proof of concept- related stuf
+
+
+
+step -1
+patient initial story beng generated- usually  paragraph based of age, sex, where pain is,...
+
+
+step 2: guess the disease
+
+Step 3: rating mechanism
+
+
