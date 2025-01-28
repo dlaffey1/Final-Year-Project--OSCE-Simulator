@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {% load static %}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patient History</title>
+    <link rel="stylesheet" href="{% static 'history/css/styles.css' %}">
+</head>
+<body>
+    <h1>Patient History Generator</h1>
+
+    <!-- Form to Generate History -->
+    <form id="generate-history-form" method="POST" action="/generate-history/">
+        {% csrf_token %}
+        <button type="submit">Generate History</button>
+    </form>
+
+    <!-- Display the generated history -->
+    <div id="history-container">
+        <h2>Generated History:</h2>
+        <pre id="history-output"></pre>
+    </div>
+
+    <!-- Form to Ask Questions -->
+    <form id="ask-question-form" method="POST" action="/ask-question/">
+        {% csrf_token %}
+        <textarea name="question" placeholder="Ask a question..." rows="4" cols="50"></textarea><br>
+        <input type="hidden" name="history" id="hidden-history">
+        <button type="submit">Ask ChatGPT</button>
+    </form>
+
+    <!-- Display ChatGPT's response -->
+    <div id="response-container">
+        <h2>ChatGPT Response:</h2>
+        <pre id="response-output"></pre>
+    </div>
+
+    <script src="{% static 'history/js/scripts.js' %}"></script>
+</body>
+</html>
