@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Patient History</title>
+</head>
+<body>
+    <h1>Patient History Generator</h1>
+
+    <!-- Form to Generate History -->
+    <form id="generate-history-form" method="POST" action="/generate-history/">
+        {% csrf_token %}
+        <button type="submit">Generate History</button>
+    </form>
+
+    <!-- Display the generated history -->
+    <div id="history-container">
+        <h2>Generated History:</h2>
+        <pre id="history-output"></pre>
+    </div>
+
+    <!-- Form to Ask Questions -->
+    <form id="ask-question-form" method="POST" action="/ask-question/">
+        {% csrf_token %}
+        <textarea name="question" placeholder="Ask a question..." rows="4" cols="50"></textarea><br>
+        <input type="hidden" name="history" id="hidden-history">
+        <button type="submit">Ask ChatGPT</button>
+    </form>
+
+    <!-- Display ChatGPT's response -->
+    <div id="response-container">
+        <h2>ChatGPT Response:</h2>
+        <pre id="response-output"></pre>
+    </div>
+
+    <script>
+        // Helper function to retrieve CSRF token from cookies
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.startsWith(name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+        const csrfToken = getCookie('csrftoken');
+
+        // Handle the history generation
+        const historyForm = document.getElementById('generate-history-form');
+        const historyContainer = document.getElementById('history-container');
+        const historyOutput = document.getElementById('history-output');
+        const hiddenHistory = document.getElementById('hidden-history');
+
+        historyForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const response = await fetch('/generate-history/', {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': csrfToken, // Include CSRF token
+                    'Content-Type': 'application/json',
+                },
+            });
+            const data = await response.json();
+            if (data.history) {
+                historyOutput.textContent = data.history;
+                hiddenHistory.value = data.history; // Populate hidden input for questions
+                historyContainer.style.display = 'block';
+            } else {
+                alert('Error generating history: ' + (data.error || 'Unknown error'));
+            }
+        });
+
+        // Handle asking a question
+        const questionForm = document.getElementById('ask-question-form');
+        const responseContainer = document.getElementById('response-container');
+        const responseOutput = document.getElementById('response-output');
+
+        questionForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(questionForm);
+            const response = await fetch('/ask-question/', {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': csrfToken, // Include CSRF token
+                },
+                body: formData
+            });
+            const data = await response.json();
+            if (data.answer) {
+                responseOutput.textContent = data.answer;
+                responseContainer.style.display = 'block';
+            } else {
+                alert('Error fetching answer: ' + (data.error || 'Unknown error'));
+            }
+        });
+    </script>
+</body>
+</html>
