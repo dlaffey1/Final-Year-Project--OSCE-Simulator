@@ -221,7 +221,6 @@ def ask_question(request):
             question = data.get("question")
             history = data.get("history")
 
-            print(f"Question asked: {question}")
             logger.info(f"Received question: {question}")
             logger.info(f"Received history: {history}")
 
@@ -230,20 +229,16 @@ def ask_question(request):
                 logger.warning("Missing 'question' or 'history' in the request.")
                 return JsonResponse({"error": "Both question and history are required"}, status=400)
 
+            # Updated prompt: Only answer the specific question using the provided history.
             prompt = f"""
-Based on the following patient history, answer the user's question:
+Based on the following patient history, please answer the user's question.
+Do not provide any additional details, recommendations, or case analysis beyond what is explicitly asked.
 
 Patient History:
 {history}
 
 User's Question:
 {question}
-
-Additionally, provide the following details where relevant:
-- The most likely underlying cause for the condition.
-- Possible signs of deterioration or complications.
-- Recommended management or treatment plan.
-- Essential steps before discharge or long-term care recommendations.
 """
 
             logger.info("Sending prompt to ChatGPT...")
@@ -252,7 +247,7 @@ Additionally, provide the following details where relevant:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a medical assistant answering questions about patient cases."
+                        "content": "You are a medical assistant. Answer only the question asked using the provided patient history, and do not provide any extra details or recommendations."
                     },
                     {
                         "role": "user",
