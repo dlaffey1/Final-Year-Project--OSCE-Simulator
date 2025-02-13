@@ -14,15 +14,19 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path
-from history.views import generate_history, ask_question
+from django.urls import include, path
+from django.contrib import admin
+from history.views import generate_history, ask_question, get_history_categories, get_conditions
 from history import views
 from django.conf import settings
 from django.conf.urls.static import static
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path('api/', include('marking_scheme_endpoints.urls')),
     path("generate-history/", generate_history, name="generate_history"),
     path("ask-question/", ask_question, name="ask_question"),
+    path("get-history-categories/", get_history_categories, name="get_history_categories"),
+    path("get-conditions/", get_conditions, name="get_conditions"),
 ] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
 
