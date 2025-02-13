@@ -45,6 +45,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'corsheaders',
+    'history',      # your existing history app
+    'marking_scheme_endpoints',
 ]
 
 MIDDLEWARE = [
