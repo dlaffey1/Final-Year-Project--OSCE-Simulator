@@ -5,7 +5,7 @@ import openai
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
-
+import os
 from AIHistory import fetch_patient_data, connect_to_db  # Keep fetch_patient_data & connect_to_db
 # Removed `generate_patient_history_with_gpt` import since we do the GPT logic inline now.
 
@@ -268,3 +268,80 @@ User's Question:
 
     logger.warning("Invalid request method.")
     return JsonResponse({"error": "Invalid request method"}, status=400)
+@csrf_exempt
+def generate_questions(request):
+    """
+    New route that takes a patient history as input and returns 4 related questions along with their answers.
+    Expects a JSON payload with the key:
+      - history: The patient's history (a structured string or JSON).
+    Returns a JSON object with the following format:
+    {
+      "questions": [
+         { "question": "...", "answer": "..." },
+         { "question": "...", "answer": "..." },
+         { "question": "...", "answer": "..." },
+         { "question": "...", "answer": "..." }
+      ]
+    }
+    """
+    logger.info("Received request to generate questions from history.")
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+    
+    history = data.get("history")
+    if history is None:
+        return JsonResponse({'error': 'Missing history parameter.'}, status=400)
+    
+    # Construct prompt instructing ChatGPT to generate 4 related questions and answers.
+    prompt = f"""
+You are provided with the following patient history:
+{history}
+
+Generate 4 questions that are related to this patient history.
+For each question, also provide a concise answer.
+Return the result as a JSON object exactly in this format:
+{{
+  "questions": [
+    {{
+      "question": "<first question>",
+      "answer": "<answer to first question>"
+    }},
+    {{
+      "question": "<second question>",
+      "answer": "<answer to second question>"
+    }},
+    {{
+      "question": "<third question>",
+      "answer": "<answer to third question>"
+    }},
+    {{
+      "question": "<fourth question>",
+      "answer": "<answer to fourth question>"
+    }}
+  ]
+}}
+Make sure the JSON is valid.
+"""
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a medical assistant that generates relevant questions and answers based on patient history."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=300,
+        )
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+    
+    ai_message = response.choices[0].message['content']
+    try:
+        result_json = json.loads(ai_message)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Failed to parse AI response as JSON.'}, status=500)
+    
+    return JsonResponse(result_json)

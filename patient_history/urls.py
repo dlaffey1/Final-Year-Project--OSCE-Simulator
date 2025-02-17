@@ -16,7 +16,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 from django.contrib import admin
-from history.views import generate_history, ask_question, get_history_categories, get_conditions
+from history.views import generate_history, ask_question, get_history_categories, get_conditions, generate_questions
 from history import views
 from django.conf import settings
 from django.conf.urls.static import static
@@ -27,6 +27,7 @@ urlpatterns = [
     path("ask-question/", ask_question, name="ask_question"),
     path("get-history-categories/", get_history_categories, name="get_history_categories"),
     path("get-conditions/", get_conditions, name="get_conditions"),
+    path('generate-questions/', generate_questions, name='generate_questions'),
 ] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
 
