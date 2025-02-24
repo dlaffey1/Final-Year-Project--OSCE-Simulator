@@ -1,21 +1,23 @@
-# Use a base image that includes apt-get (we’re using python:3.11-slim)
+# Use a Debian‑based image that includes apt-get
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies, including build tools and development headers
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    python3-dev \
     libpq-dev \
     libsystemd-dev \
     pkg-config \
     libcairo2-dev \
     meson \
     ninja-build \
+    libffi-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Copy requirements.txt first to leverage Docker cache for dependency installation
+# Copy requirements.txt first to leverage Docker cache for dependencies
 COPY requirements.txt .
 
 # Upgrade pip and install Python dependencies
