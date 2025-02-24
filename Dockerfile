@@ -1,7 +1,7 @@
 # Use a Debian‑based image that includes apt-get
 FROM python:3.11-slim
 
-# Install system dependencies, including build tools and development headers
+# Install system dependencies required for your project
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     python3-dev \
@@ -12,12 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     meson \
     ninja-build \
     libffi-dev \
+    libgirepository1.0-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Copy requirements.txt first to leverage Docker cache for dependencies
+# Copy requirements.txt first to leverage Docker cache for dependency installation
 COPY requirements.txt .
 
 # Upgrade pip and install Python dependencies
@@ -26,13 +27,11 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # Copy the rest of the project files into the container
 COPY . .
 
-# Collect static files (adjust if needed)
+# (Optional) Run Django management commands if you're deploying a Django project:
 RUN python manage.py collectstatic --noinput
-
-# Run database migrations (optional; consider running this as part of your deployment pipeline)
 RUN python manage.py migrate --noinput
 
-# Expose the port (Render and similar services provide the port via the $PORT variable)
+# Expose the port (Render provides the port via the $PORT variable)
 EXPOSE $PORT
 
 # Set the default command to run Gunicorn with your Django project's WSGI application.
