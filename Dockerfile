@@ -1,16 +1,21 @@
 # Use a base image that includes apt-get (we’re using python:3.11-slim)
 FROM python:3.11-slim
 
-# Install system dependencies (including build-essential and PostgreSQL client libraries)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
+    libsystemd-dev \
+    pkg-config \
+    libcairo2-dev \
+    meson \
+    ninja-build \
  && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Copy requirements.txt first to leverage Docker cache for dependencies
+# Copy requirements.txt first to leverage Docker cache for dependency installation
 COPY requirements.txt .
 
 # Upgrade pip and install Python dependencies
