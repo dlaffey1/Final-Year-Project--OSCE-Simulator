@@ -1,1 +1,2 @@
 libsystemd-dev
+libdbus-1-dev
