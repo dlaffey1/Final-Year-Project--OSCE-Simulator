@@ -1,219 +1,167 @@
-from dotenv import load_dotenv
-import openai
+import json
 import os
-import psycopg2
+import re  # Ensure this import is present!
+import openai
+import logging
+from google.cloud import bigquery  # Import BigQuery client
 from datetime import date
+from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# OpenAI API key
+# Set your OpenAI API key from the environment
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Database connection settings
-DB_CONFIG = {
-    "dbname": "mimiciii",
-    "user": "postgres",
-    "password": "123",
-    "host": "localhost",
-    "port": 5432,
-}
+# Set up logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
-# Connect to the database
-def connect_to_db(config):
+# Updated fetch_patient_data to use BigQuery
+def fetch_patient_data(client: bigquery.Client):
     try:
-        connection = psycopg2.connect(**config, options="-c statement_timeout=100000")
-        print("Database connection successful.")
-        return connection
+        # Query to get one random patient by joining PATIENTS and ADMISSIONS
+        query_patient = """
+            SELECT 
+                p.subject_id, 
+                p.gender, 
+                p.dob, 
+                a.admittime, 
+                a.dischtime, 
+                a.hadm_id
+            FROM `fyp-project-451413.mimic_iii_local.PATIENTS` AS p
+            JOIN `fyp-project-451413.mimic_iii_local.ADMISSIONS` AS a
+              ON p.subject_id = a.subject_id
+            ORDER BY RAND()
+            LIMIT 1;
+        """
+        query_job = client.query(query_patient)
+        rows = list(query_job.result())
+        if not rows:
+            logger.warning("No patient found.")
+            return None, None, None, None, None, None
+        patient = rows[0]
+        
+        # For the other data pieces, add additional queries or return placeholders.
+        diagnoses = "Diagnoses data placeholder"  
+        events = "Events data placeholder"
+        notes = "Notes data placeholder"
+        lab_tests = "Lab tests data placeholder"
+        prescriptions = "Prescriptions data placeholder"
+        
+        return patient, diagnoses, events, notes, lab_tests, prescriptions
     except Exception as e:
-        print(f"Error connecting to the database: {e}")
-        return None
-
-# Fetch patient data
-def fetch_patient_data(connection):
-    try:
-        with connection.cursor() as cursor:
-            # Fetch random patient demographic and admission details
-            cursor.execute(
-                """
-                SELECT p.subject_id, p.gender, p.dob, a.admittime, a.dischtime, a.hadm_id
-                FROM mimiciii.patients p
-                JOIN mimiciii.admissions a ON p.subject_id = a.subject_id
-                WHERE p.subject_id IN (
-                    SELECT subject_id
-                    FROM mimiciii.patients
-                    TABLESAMPLE SYSTEM(1)
-                    LIMIT 1
-                )
-                LIMIT 1;
-                """
-            )
-            patient = cursor.fetchone()
-            if not patient:
-                print("No patient found.")
-                return None, None, None, None, None, None
-
-            # Fetch diagnoses
-            cursor.execute(
-                """
-                SELECT di.icd9_code, dd.long_title
-                FROM mimiciii.diagnoses_icd di
-                JOIN mimiciii.d_icd_diagnoses dd ON di.icd9_code = dd.icd9_code
-                WHERE di.subject_id = %s AND di.hadm_id = %s
-                LIMIT 5;
-                """,
-                (patient[0], patient[5]),
-            )
-            diagnoses = cursor.fetchall()
-
-            # Fetch events (e.g., vitals, treatments)
-            cursor.execute(
-                """
-                SELECT ce.charttime, d.label, ce.value, ce.valuenum, ce.valueuom
-                FROM mimiciii.chartevents ce
-                JOIN mimiciii.d_items d ON ce.itemid = d.itemid
-                WHERE ce.subject_id = %s AND ce.hadm_id = %s
-                LIMIT 5;
-                """,
-                (patient[0], patient[5]),
-            )
-            events = cursor.fetchall()
-
-            # Fetch clinical notes
-            cursor.execute(
-                """
-                SELECT n.category, n.text
-                FROM mimiciii.noteevents n
-                WHERE n.subject_id = %s AND n.hadm_id = %s
-                LIMIT 3;
-                """,
-                (patient[0], patient[5]),  # Correctly use hadm_id
-            )
-            notes = cursor.fetchall()
-
-            # Fetch lab tests
-            cursor.execute(
-                """
-                SELECT le.charttime, dl.label, le.value, le.valuenum, le.flag
-                FROM mimiciii.labevents le
-                JOIN mimiciii.d_labitems dl ON le.itemid = dl.itemid
-                WHERE le.subject_id = %s AND le.hadm_id = %s
-                LIMIT 5;
-                """,
-                (patient[0], patient[5]),
-            )
-            lab_tests = cursor.fetchall()
-
-            # Fetch prescriptions
-            cursor.execute(
-                """
-                SELECT drug, formulary_drug_cd, prod_strength, dose_val_rx
-                FROM mimiciii.prescriptions
-                WHERE subject_id = %s AND hadm_id = %s
-                LIMIT 5;
-                """,
-                (patient[0], patient[5]),
-            )
-            prescriptions = cursor.fetchall()
-
-            return patient, diagnoses, events, notes, lab_tests, prescriptions
-    except Exception as e:
-        print(f"Error fetching patient data: {e}")
+        logger.exception("Error fetching patient data: %s", e)
         return None, None, None, None, None, None
 
-def generate_patient_history_with_gpt(patient, diagnoses, events, notes, lab_tests, prescriptions):
-    subject_id, gender, dob, admittime, dischtime, hadm_id = patient
-    age = calculate_age(dob, admittime)
-
-    # Format data for the prompt
-    diagnoses_text = ", ".join([f"{diag[1]} (ICD-9: {diag[0]})" for diag in diagnoses])
-    events_text = "; ".join(
-        [f"{event[1]}: {event[2]} {event[4] if event[4] else ''}" for event in events]
-    )
-    notes_text = "\n".join([f"Category: {note[0]}\nNote: {note[1][:200]}...\n" for note in notes])  # Truncate long notes
-    lab_tests_text = ", ".join([f"{test[1]}: {test[3]} ({test[4] if test[4] else 'normal'})" for test in lab_tests])
-    prescriptions_text = ", ".join([f"{prescription[0]} ({prescription[2]}, {prescription[3]})" for prescription in prescriptions])
-
-    # ChatGPT prompt
-    prompt = f"""
-Write a detailed case summary for a patient in the following format:
-
-CASE: A [Case-Specific Title]
-
-History:
-Summarize the patient's medical background, reasons for admission, and relevant past conditions.
-
-Examination:
-Summarize current findings, vital signs, physical observations, and relevant lab results.
-
-Questions(You should construct this section by asking questions related to the case in a similar way as this. Only ask questions in this section, do not answer them):
-- What is the most likely underlying cause for this acute episode?
-- What signs would you look for of impending respiratory failure?
-# - Outline your management plan for this acute episode?
-- What should happen before the patient is discharged?
-
----
-
-Details:
-- Patient ID: {subject_id}
-- Age: {age}
-- Gender: {'Male' if gender == 'M' else 'Female'}
-- Admission Date: {admittime.date()}
-- Discharge Date: {dischtime.date() if dischtime else 'N/A'}
-- Diagnoses: {diagnoses_text}
-- Events: {events_text}
-- Lab Tests: {lab_tests_text}
-- Prescriptions: {prescriptions_text}
-- Clinical Notes:
-{notes_text}
-    """
-
-    try:
-        # Use ChatGPT API
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # Use "gpt-4" if available
-            messages=[
-                {"role": "system", "content": "You are a highly detailed medical assistant generating structured patient case summaries."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=1200,
-            temperature=0.7
-        )
-        return response["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"Error using ChatGPT: {e}")
-        return None
 
 # Calculate age at the time of admission
 def calculate_age(dob, admittime):
     try:
         age = admittime.year - dob.year - ((admittime.month, admittime.day) < (dob.month, dob.day))
-        return age if age >= 0 else "Unknown"  # Handle any inconsistencies
+        return age if age >= 0 else "Unknown"
     except Exception as e:
-        print(f"Error calculating age: {e}")
+        logger.error("Error calculating age: %s", e)
         return "Unknown"
 
+# Generate patient history using ChatGPT
+def generate_patient_history_with_gpt(patient, diagnoses, events, notes, lab_tests, prescriptions):
+    subject_id, gender, dob, admittime, dischtime, hadm_id = patient
+    age = calculate_age(dob, admittime)
 
-if __name__ == "__main__":
-    connection = connect_to_db(DB_CONFIG)
-    if not connection:
-        exit()
+    # Format the data for the prompt (modify as needed)
+    diagnoses_text = diagnoses
+    events_text = events
+    notes_text = notes
+    lab_tests_text = lab_tests
+    prescriptions_text = prescriptions
+
+    prompt = f"""
+You are provided with the following patient data:
+Patient Info: {patient}
+Diagnoses: {diagnoses_text}
+Events: {events_text}
+Notes: {notes_text}
+Lab tests: {lab_tests_text}
+Prescriptions: {prescriptions_text}
+
+Please generate a structured patient history under these headings:
+1) Presenting complaint (PC)
+2) History of presenting complaint (HPC)
+3) Past medical history (PMHx)
+4) Drug history (DHx)
+5) Family history (FHx)
+6) Social history (SHx)
+7) Systems review (SR)
+
+Return the entire result as valid JSON with each heading as a field, like:
+{{
+  "PC": "...",
+  "HPC": "...",
+  "PMHx": "...",
+  "DHx": "...",
+  "FHx": "...",
+  "SHx": "...",
+  "SR": "..."
+}}
+
+Make sure the JSON is valid and includes each heading, even if empty.
+"""
+    logger.debug("Constructed prompt for generate_history: %s", prompt)
 
     try:
-        # Fetch patient data
-        patient, diagnoses, events, notes, lab_tests, prescriptions = fetch_patient_data(connection)
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",  # or "gpt-4" if available and desired
+            messages=[
+                {"role": "system", "content": "You are a medical assistant providing structured patient histories."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=800,
+            temperature=0.7,
+        )
+        history_response = response["choices"][0]["message"]["content"].strip()
+        logger.info("ChatGPT raw response (generate_history): %s", history_response)
+    except Exception as e:
+        logger.error("Error using ChatGPT: %s", e)
+        return None
+
+    try:
+        history_data = json.loads(history_response)
+    except json.JSONDecodeError:
+        logger.warning("GPT returned invalid JSON; storing entire response in 'PC' only.")
+        history_data = {
+            "PC": history_response,
+            "HPC": "",
+            "PMHx": "",
+            "DHx": "",
+            "FHx": "",
+            "SHx": "",
+            "SR": ""
+        }
+
+    logger.info("Final structured history: %s", history_data)
+    return history_data
+
+if __name__ == "__main__":
+    try:
+        # Initialize BigQuery client (make sure your GOOGLE_APPLICATION_CREDENTIALS env variable is set)
+        client = bigquery.Client()
+        logger.info("BigQuery client initialized successfully.")
+    except Exception as e:
+        logger.error("Error initializing BigQuery client: %s", e)
+        exit(1)
+
+    try:
+        patient, diagnoses, events, notes, lab_tests, prescriptions = fetch_patient_data(client)
         if patient:
-            # Generate patient history
-            history = generate_patient_history_with_gpt(patient, diagnoses, events, notes, lab_tests, prescriptions)
-            if history:
-                # Save to file
+            history_data = generate_patient_history_with_gpt(patient, diagnoses, events, notes, lab_tests, prescriptions)
+            if history_data:
                 with open("formatted_patient_history.txt", "w") as file:
-                    file.write(history)
+                    file.write(json.dumps(history_data, indent=2))
                 print("Patient history saved to 'formatted_patient_history.txt'.")
             else:
                 print("Failed to generate patient history.")
         else:
             print("No patient data available.")
-    finally:
-        if connection:
-            connection.close()
+    except Exception as e:
+        logger.exception("An unexpected error occurred: %s", e)

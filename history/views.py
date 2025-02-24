@@ -1,13 +1,16 @@
-import logging
 import json
+import os
+import re  # Ensure this import is present!
 import openai
+import logging
+from google.cloud import bigquery  # Import BigQuery client
 
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
-import os
-from AIHistory import fetch_patient_data, connect_to_db  # Keep fetch_patient_data & connect_to_db
-# Removed `generate_patient_history_with_gpt` import since we do the GPT logic inline now.
+
+# If you have updated your fetch_patient_data to work with BigQuery, import it.
+from AIHistory import fetch_patient_data  # Assume this now works with BigQuery
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -22,29 +25,23 @@ def generate_history(request):
 
     if request.method == "POST":
         logger.info("POST request received - processing data.")
-        connection = connect_to_db({
-            "dbname": "mimiciii",
-            "user": "postgres",
-            "password": "123",
-            "host": "localhost",
-            "port": 5432,
-        })
-
-        if not connection:
-            logger.error("Failed to connect to the database.")
-            return JsonResponse({"error": "Database connection failed"}, status=500)
+        try:
+            # Initialize BigQuery client instead of a local Postgres connection.
+            client = bigquery.Client()
+            logger.info("BigQuery client initialized successfully.")
+        except Exception as e:
+            logger.error("Failed to initialize BigQuery client: %s", e)
+            return JsonResponse({"error": "BigQuery connection failed"}, status=500)
 
         try:
-            logger.info("Fetching patient data...")
-            patient, diagnoses, events, notes, lab_tests, prescriptions = fetch_patient_data(connection)
+            logger.info("Fetching patient data from BigQuery...")
+            # Call your updated fetch_patient_data function, passing the BigQuery client.
+            patient, diagnoses, events, notes, lab_tests, prescriptions = fetch_patient_data(client)
 
             if patient:
                 logger.info(f"Patient data found: {patient}")
                 logger.info("Generating patient history using ChatGPT (JSON format)...")
 
-                # -------------------------------
-                # Inline ChatGPT call for JSON
-                # -------------------------------
                 prompt = f"""
 You are provided with the following patient data:
 Patient Info: {patient}
@@ -76,29 +73,21 @@ Return the entire result as valid JSON with each heading as a field, like:
 
 Make sure the JSON is valid and includes each heading, even if empty.
 """
+                logger.debug("Constructed prompt for generate_history: %s", prompt)
 
-                # Call OpenAI
                 gpt_response = openai.ChatCompletion.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a medical assistant providing structured patient histories."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
+                        {"role": "system", "content": "You are a medical assistant providing structured patient histories."},
+                        {"role": "user", "content": prompt}
                     ],
                     max_tokens=800,
                     temperature=0.7,
                 )
 
-                # Grab the returned text
                 history_json_str = gpt_response["choices"][0]["message"]["content"].strip()
-                logger.info(f"ChatGPT raw response: {history_json_str}")
+                logger.info(f"ChatGPT raw response (generate_history): {history_json_str}")
 
-                # Try parsing the JSON
                 try:
                     history_data = json.loads(history_json_str)
                 except json.JSONDecodeError:
@@ -115,101 +104,67 @@ Make sure the JSON is valid and includes each heading, even if empty.
 
                 logger.info(f"Final structured history: {history_data}")
                 return JsonResponse({"history": history_data}, status=200)
-
             else:
-                logger.warning("No patient data found in the database.")
+                logger.warning("No patient data found in BigQuery.")
                 return JsonResponse({"error": "No patient data found"}, status=404)
-
         except Exception as e:
-            logger.exception("An error occurred while processing the request.")
+            logger.exception("An error occurred while processing the request: %s", e)
             return JsonResponse({"error": f"An unexpected error occurred: {str(e)}"}, status=500)
-
-        finally:
-            logger.info("Closing the database connection.")
-            connection.close()
-
     logger.warning("Invalid request method.")
     return JsonResponse({"error": "Invalid request method"}, status=400)
+
 @csrf_exempt
 def get_conditions(request):
     logger.info("Received request to fetch condition types.")
-
     try:
-        connection = connect_to_db({
-            "dbname": "mimiciii",
-            "user": "postgres",
-            "password": "123",
-            "host": "localhost",
-            "port": 5432,
-        })
+        client = bigquery.Client()
+        logger.info("BigQuery client initialized for get_conditions.")
 
-        if not connection:
-            logger.error("Database connection failed.")
-            return JsonResponse({"error": "Database connection failed"}, status=500)
-
-        cursor = connection.cursor()
         search_query = request.GET.get("search", "").strip()
-
-        # Fetch only 100 results, filtering by search input
-        cursor.execute("""
-            SELECT DISTINCT d_icd_diagnoses.long_title
-            FROM mimiciii.diagnoses_icd
-            JOIN mimiciii.d_icd_diagnoses
-            ON diagnoses_icd.icd9_code = d_icd_diagnoses.icd9_code
-            WHERE d_icd_diagnoses.long_title ILIKE %s
-            ORDER BY d_icd_diagnoses.long_title
+        # Updated query joining the two tables:
+        query = """
+            SELECT DISTINCT d.long_title
+            FROM `fyp-project-451413.mimic_iii_local.DIAGNOSES_ICD` AS i
+            JOIN `fyp-project-451413.mimic_iii_local.D_ICD_DIAGNOSES` AS d
+              ON i.ICD9_CODE = d.icd9_code
+            WHERE LOWER(d.long_title) LIKE LOWER(@search)
+            ORDER BY d.long_title
             LIMIT 10000;
-        """, (f"%{search_query}%",))
-
-        conditions = [row[0] for row in cursor.fetchall()]
-        cursor.close()
-        connection.close()
-
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("search", "STRING", f"%{search_query}%")
+            ]
+        )
+        query_job = client.query(query, job_config=job_config)
+        results = query_job.result()
+        # Use lowercase field name
+        conditions = [row.long_title for row in results]
+        logger.info("Fetched conditions from BigQuery.")
         return JsonResponse({"conditions": conditions}, status=200)
-
     except Exception as e:
-        logger.exception("Error fetching conditions.")
+        logger.exception("Error fetching conditions: %s", e)
         return JsonResponse({"error": f"Failed to fetch conditions: {str(e)}"}, status=500)
+
 @csrf_exempt
 def get_history_categories(request):
-    """
-    Fetches distinct condition categories from MIMIC-III (e.g., Cardiovascular, Neurological).
-    """
     logger.info("Received request to fetch history categories.")
-
     try:
-        connection = connect_to_db({
-            "dbname": "mimiciii",
-            "user": "postgres",
-            "password": "123",
-            "host": "localhost",
-            "port": 5432,
-        })
+        client = bigquery.Client()
+        logger.info("BigQuery client initialized for get_history_categories.")
 
-        if not connection:
-            logger.error("Database connection failed.")
-            return JsonResponse({"error": "Database connection failed"}, status=500)
-
-        cursor = connection.cursor()
-
-        # Fetch distinct categories (assuming categories exist in the `d_icd_diagnoses` table)
-        cursor.execute("""
-            SELECT DISTINCT LEFT(d_icd_diagnoses.icd9_code, 3) AS category_prefix
-            FROM mimiciii.d_icd_diagnoses
-            ORDER BY category_prefix
+        query = """
+            SELECT DISTINCT SUBSTR(icd9_code, 1, 3) AS category_prefix
+            FROM `fyp-project-451413.mimic_iii_local.DIAGNOSES_ICD`            ORDER BY category_prefix
             LIMIT 50;
-        """)
-
-
-
-        categories = [row[0] for row in cursor.fetchall()]
-        cursor.close()
-        connection.close()
-
+        """
+        query_job = client.query(query)
+        results = query_job.result()
+        categories = [row.category_prefix for row in results]
+        logger.info("Fetched history categories from BigQuery.")
         return JsonResponse({"categories": categories}, status=200)
-
     except Exception as e:
-        logger.exception("Error fetching history categories.")
+        logger.exception("Error fetching history categories: %s", e)
         return JsonResponse({"error": f"Failed to fetch categories: {str(e)}"}, status=500)
 
 @csrf_exempt
@@ -224,12 +179,10 @@ def ask_question(request):
             logger.info(f"Received question: {question}")
             logger.info(f"Received history: {history}")
 
-            # Ensure both question and history are provided
             if not question or not history:
                 logger.warning("Missing 'question' or 'history' in the request.")
                 return JsonResponse({"error": "Both question and history are required"}, status=400)
 
-            # Updated prompt: Only answer the specific question using the provided history.
             prompt = f"""
 Based on the following patient history, please answer the user's question.
 Do not provide any additional details, recommendations, or case analysis beyond what is explicitly asked.
@@ -240,34 +193,27 @@ Patient History:
 User's Question:
 {question}
 """
-
-            logger.info("Sending prompt to ChatGPT...")
+            logger.info("Sending prompt to OpenAI for ask_question...")
             response = openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a medical assistant. Answer only the question asked using the provided patient history, and do not provide any extra details or recommendations."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
+                    {"role": "system", "content": "You are a medical assistant. Answer only the question asked using the provided patient history, and do not provide any extra details or recommendations."},
+                    {"role": "user", "content": prompt}
                 ],
                 max_tokens=600,
                 temperature=0.7
             )
             answer = response["choices"][0]["message"]["content"].strip()
-            logger.info(f"ChatGPT response: {answer}")
+            logger.info(f"ChatGPT response (ask_question): {answer}")
 
             return JsonResponse({"answer": answer}, status=200)
-
         except Exception as e:
-            logger.exception("An error occurred while querying ChatGPT.")
+            logger.exception("An error occurred while querying ChatGPT for ask_question: %s", e)
             return JsonResponse({"error": f"ChatGPT query failed: {e}"}, status=500)
-
-    logger.warning("Invalid request method.")
+    logger.warning("Invalid request method for ask_question.")
     return JsonResponse({"error": "Invalid request method"}, status=400)
+
+
 @csrf_exempt
 def generate_questions(request):
     """
@@ -277,10 +223,10 @@ def generate_questions(request):
     Returns a JSON object with the following format:
     {
       "questions": [
-         { "question": "...", "answer": "..." },
-         { "question": "...", "answer": "..." },
-         { "question": "...", "answer": "..." },
-         { "question": "...", "answer": "..." }
+         { "question": "<first question>", "answer": "<answer to first question>" },
+         { "question": "<second question>", "answer": "<answer to second question>" },
+         { "question": "<third question>", "answer": "<answer to third question>" },
+         { "question": "<fourth question>", "answer": "<answer to fourth question>" }
       ]
     }
     """
@@ -294,14 +240,14 @@ def generate_questions(request):
     if history is None:
         return JsonResponse({'error': 'Missing history parameter.'}, status=400)
     
-    # Construct prompt instructing ChatGPT to generate 4 related questions and answers.
     prompt = f"""
 You are provided with the following patient history:
 {history}
 
 Generate 4 questions that are related to this patient history.
 For each question, also provide a concise answer.
-Return the result as a JSON object exactly in this format:
+Return ONLY a JSON object exactly in this format (do not include any additional text or explanation):
+
 {{
   "questions": [
     {{
@@ -322,26 +268,50 @@ Return the result as a JSON object exactly in this format:
     }}
   ]
 }}
-Make sure the JSON is valid.
+
+Ensure the JSON is valid.
 """
+    logger.debug("Constructed prompt for generate_questions: %s", prompt)
+
     openai.api_key = os.getenv("OPENAI_API_KEY")
+    
     try:
+        logger.info("Sending prompt to OpenAI for generate_questions...")
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a medical assistant that generates relevant questions and answers based on patient history."},
+                {"role": "system", "content": "You are a medical assistant that generates relevant questions and answers based on patient history. Output ONLY valid JSON."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
             max_tokens=300,
         )
+        logger.info("Received response from OpenAI for generate_questions.")
     except Exception as e:
+        logger.error("Error during OpenAI request for generate_questions: %s", e)
         return JsonResponse({'error': str(e)}, status=500)
     
     ai_message = response.choices[0].message['content']
+    logger.debug("Raw AI message for generate_questions: %s", ai_message)
+    
     try:
         result_json = json.loads(ai_message)
-    except json.JSONDecodeError:
-        return JsonResponse({'error': 'Failed to parse AI response as JSON.'}, status=500)
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse AI response as JSON in generate_questions: %s", e)
+        json_match = re.search(r"\{.*\}", ai_message, re.DOTALL)
+        if json_match:
+            try:
+                result_json = json.loads(json_match.group(0))
+                logger.info("Extracted JSON via regex fallback in generate_questions.")
+            except json.JSONDecodeError as e2:
+                logger.error("Fallback JSON extraction failed in generate_questions: %s", e2)
+                return JsonResponse({'error': 'Failed to parse AI response as JSON.'}, status=500)
+        else:
+            return JsonResponse({'error': 'Failed to parse AI response as JSON.'}, status=500)
     
+    logger.info("Returning result from generate_questions: %s", result_json)
     return JsonResponse(result_json)
+
+
+def example_endpoint(request):
+    return JsonResponse({'message': 'Hello from the new API!'})
