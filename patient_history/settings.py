@@ -18,7 +18,7 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 SECRET_KEY = 'django-insecure-!fi*qz93$0z!)-i9#_sn4r)5b0b4fpj_9#fpwh(a-i^c80e)%%'
 
 DEBUG = True
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['final-year-project-osce-simulator-1.onrender.com', 'localhost', '127.0.0.1']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -112,7 +112,10 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = ["http://localhost:3000"]
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+    "https://fyp-ai-chatbot-git-main-dlaffey1s-projects.vercel.app"
+]
 
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
