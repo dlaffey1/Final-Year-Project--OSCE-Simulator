@@ -36,5 +36,4 @@ RUN python manage.py collectstatic --noinput
 # Expose the port (Render provides the port via the $PORT variable)
 EXPOSE $PORT
 
-# Set the default command to run Gunicorn with your Django project's WSGI application.
-CMD ["gunicorn", "patient_history.wsgi:application", "--bind", "0.0.0.0:$PORT"]
+CMD ["sh", "-c", "gunicorn patient_history.wsgi:application --bind 0.0.0.0:$PORT"]
