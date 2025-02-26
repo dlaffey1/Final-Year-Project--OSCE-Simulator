@@ -25,7 +25,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/3.2/howto/deployment/checklist/
 STATIC_URL = '/static/'
 STATICFILES_DIRS = [BASE_DIR / "static"]  # Include the global static directory
-
+STATIC_ROOT = BASE_DIR / "staticfiles"   # Destination for collectstatic
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-!fi*qz93$0z!)-i9#_sn4r)5b0b4fpj_9#fpwh(a-i^c80e)%%'
 
