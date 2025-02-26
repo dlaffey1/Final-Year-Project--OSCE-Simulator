@@ -31,7 +31,7 @@ COPY . .
 
 # (Optional) For Django: Collect static files and run migrations
 RUN python manage.py collectstatic --noinput
-RUN python manage.py migrate --noinput
+# RUN python manage.py migrate --noinput
 
 # Expose the port (Render provides the port via the $PORT variable)
 EXPOSE $PORT
