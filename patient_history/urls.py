@@ -23,6 +23,7 @@ from django.conf.urls.static import static
 urlpatterns = [
     path("admin/", admin.site.urls),
     path('api/', include('marking_scheme_endpoints.urls')),
+    path('realtime/', include('realtime.urls')),
     path("generate-history/", generate_history, name="generate_history"),
     path("ask-question/", ask_question, name="ask_question"),
     path("get-history-categories/", get_history_categories, name="get_history_categories"),
