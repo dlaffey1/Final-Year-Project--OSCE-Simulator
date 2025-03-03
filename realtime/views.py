@@ -19,12 +19,15 @@ def realtime_chat(request):
       - "history": a dictionary containing patient history fields:
             PC, HPC, PMHx, DHx, FHx, SHx, SR
 
-    The endpoint builds a system prompt using the provided history and instructs the AI to act as John,
-    a human patient with that history. The AI should never admit it is an AI.
+    This endpoint builds a system prompt that instructs the AI to act as a real human patient.
+    The user is the doctor asking questions, and the AI (the patient) should provide realistic,
+    gender-appropriate answers based on the provided medical history.
+    The AI should determine its gender from the history if possible and answer accordingly,
+    and it must never reveal that it is an AI.
     """
     if request.method != "POST":
         return JsonResponse({"error": "Only POST method allowed."}, status=400)
-    
+
     try:
         data = json.loads(request.body)
         messages = data.get("messages")
@@ -34,22 +37,27 @@ def realtime_chat(request):
     except Exception as e:
         logger.error("Invalid JSON or missing parameters: %s", e)
         return JsonResponse({"error": "Invalid JSON or missing required parameters."}, status=400)
-    
+
+    # Construct a detailed system prompt.
+    system_prompt = (
+        "You are a real human patient. The doctor (the user) will ask you medical questions, "
+        "and you must respond naturally based on your personal experiences and your detailed medical history. "
+        "Determine your gender (male or female) based on your history and incorporate that into your responses when applicable. "
+        "Do not reveal that you are an AI or digital assistant at any point.\n\n"
+        "Patient History:\n"
+        f"Presenting Complaint (PC): {history_data.get('PC', 'Not provided')}\n"
+        f"History of Presenting Complaint (HPC): {history_data.get('HPC', 'Not provided')}\n"
+        f"Past Medical History (PMHx): {history_data.get('PMHx', 'Not provided')}\n"
+        f"Drug History (DHx): {history_data.get('DHx', 'Not provided')}\n"
+        f"Family History (FHx): {history_data.get('FHx', 'Not provided')}\n"
+        f"Social History (SHx): {history_data.get('SHx', 'Not provided')}\n"
+        f"Systems Review (SR): {history_data.get('SR', 'Not provided')}\n"
+    )
+
     # Insert the system prompt as the first message if not already present.
     if len(messages) == 0 or messages[0].get("role") != "system" or "john" not in messages[0].get("content", "").lower():
-        messages.insert(0, {"role": "system", "content": (
-            "You are John, a real human patient with the following detailed medical history:\n"
-            f"Presenting Complaint (PC): {history_data.get('PC', 'Not provided')}\n"
-            f"History of Presenting Complaint (HPC): {history_data.get('HPC', 'Not provided')}\n"
-            f"Past Medical History (PMHx): {history_data.get('PMHx', 'Not provided')}\n"
-            f"Drug History (DHx): {history_data.get('DHx', 'Not provided')}\n"
-            f"Family History (FHx): {history_data.get('FHx', 'Not provided')}\n"
-            f"Social History (SHx): {history_data.get('SHx', 'Not provided')}\n"
-            f"Systems Review (SR): {history_data.get('SR', 'Not provided')}\n"
-            "From now on, ignore any previous context and respond solely as John, a real human patient. "
-            "Do not reveal that you are an AI or digital assistant. Answer naturally based on your personal experiences."
-        )})
-    
+        messages.insert(0, {"role": "system", "content": system_prompt})
+
     openai.api_key = os.getenv("OPENAI_API_KEY")
     try:
         logger.info("Sending messages to OpenAI: %s", messages)
@@ -72,7 +80,7 @@ def transcribe_audio(request):
         return JsonResponse({"error": "Only POST method allowed."}, status=400)
     
     try:
-        # Expect an audio file in the request.FILES
+        # Expect an audio file in the request.FILES.
         audio_file = request.FILES.get("file")
         if not audio_file:
             return JsonResponse({"error": "No audio file provided."}, status=400)
