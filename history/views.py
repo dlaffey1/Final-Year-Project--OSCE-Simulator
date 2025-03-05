@@ -315,3 +315,101 @@ Ensure the JSON is valid.
 
 def example_endpoint(request):
     return JsonResponse({'message': 'Hello from the new API!'})
+@csrf_exempt
+def get_general_condition_categories(request):
+    logger.info("Received request to fetch general condition categories.")
+    try:
+        client = bigquery.Client()
+        logger.info("BigQuery client initialized for get_general_condition_categories.")
+
+        # This query groups ICD-9 codes into general disease categories.
+        # Note: Adjust the ranges below based on your specific mapping.
+        query = """
+        SELECT
+        CASE
+            WHEN icd9_code LIKE 'V%' THEN 'Supplementary Conditions'
+            WHEN icd9_code LIKE 'E%' THEN 'External Causes'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 1 AND 19 THEN 'Infectious & Parasitic Diseases'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 20 AND 39 THEN 'Neoplasms'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 40 AND 49 THEN 'Endocrine & Metabolic'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 50 AND 59 THEN 'Blood Disorders'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 60 AND 69 THEN 'Mental Disorders'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 70 AND 79 THEN 'Nervous System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 80 AND 89 THEN 'Sense Organs'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 90 AND 99 THEN 'Circulatory System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 100 AND 109 THEN 'Respiratory System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 110 AND 119 THEN 'Digestive System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 120 AND 129 THEN 'Genitourinary System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 130 AND 139 THEN 'Pregnancy/Childbirth'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 140 AND 149 THEN 'Skin Disorders'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 2) AS INT64) BETWEEN 150 AND 159 THEN 'Musculoskeletal'
+            ELSE 'Other'
+        END AS disease_category,
+        COUNT(*) AS count
+        FROM `fyp-project-451413.mimic_iii_local.DIAGNOSES_ICD`
+        GROUP BY disease_category
+        ORDER BY disease_category
+        LIMIT 50;
+        """
+        query_job = client.query(query)
+        results = query_job.result()
+        categories = [row.disease_category for row in results]
+        logger.info("Fetched general condition categories from BigQuery.")
+        return JsonResponse({"categories": categories}, status=200)
+    except Exception as e:
+        logger.exception("Error fetching general condition categories: %s", e)
+        return JsonResponse({"error": f"Failed to fetch categories: {str(e)}"}, status=500)
+
+
+@csrf_exempt
+def get_conditions_by_category(request):
+    logger.info("Received request to fetch conditions by category.")
+    try:
+        client = bigquery.Client()
+        logger.info("BigQuery client initialized for get_conditions_by_category.")
+        
+        category = request.GET.get("category", "").strip()
+        if not category:
+            return JsonResponse({"error": "Category parameter is required."}, status=400)
+        
+        query = """
+            SELECT DISTINCT d.LONG_TITLE AS long_title
+            FROM `fyp-project-451413.mimic_iii_local.DIAGNOSES_ICD` AS i
+            JOIN `fyp-project-451413.mimic_iii_local.D_ICD_DIAGNOSES` AS d
+              ON i.ICD9_CODE = d.icd9_code
+            WHERE
+              CASE
+                WHEN i.icd9_code LIKE 'V%' THEN 'Supplementary Conditions'
+                WHEN i.icd9_code LIKE 'E%' THEN 'External Causes'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 1 AND 19 THEN 'Infectious & Parasitic Diseases'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 20 AND 39 THEN 'Neoplasms'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 40 AND 49 THEN 'Endocrine & Metabolic'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 50 AND 59 THEN 'Blood Disorders'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 60 AND 69 THEN 'Mental Disorders'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 70 AND 79 THEN 'Nervous System'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 80 AND 89 THEN 'Sense Organs'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 90 AND 99 THEN 'Circulatory System'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 100 AND 109 THEN 'Respiratory System'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 110 AND 119 THEN 'Digestive System'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 120 AND 129 THEN 'Genitourinary System'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 130 AND 139 THEN 'Pregnancy/Childbirth'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 140 AND 149 THEN 'Skin Disorders'
+                WHEN SAFE_CAST(SUBSTR(i.icd9_code, 1, 2) AS INT64) BETWEEN 150 AND 159 THEN 'Musculoskeletal'
+                ELSE 'Other'
+              END = @category
+            ORDER BY d.LONG_TITLE
+            LIMIT 100;
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("category", "STRING", category)
+            ]
+        )
+        query_job = client.query(query, job_config=job_config)
+        results = query_job.result()
+        conditions = [row.long_title for row in results]
+        logger.info("Fetched conditions for category '%s' from BigQuery.", category)
+        return JsonResponse({"conditions": conditions}, status=200)
+    except Exception as e:
+        logger.exception("Error fetching conditions by category: %s", e)
+        return JsonResponse({"error": f"Failed to fetch conditions: {str(e)}"}, status=500)
