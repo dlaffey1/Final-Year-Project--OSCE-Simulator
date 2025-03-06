@@ -11,6 +11,7 @@ logging.basicConfig(level=logging.DEBUG)
 def index(request):
     return JsonResponse({"message": "Realtime API endpoint working!"})
 
+
 @csrf_exempt
 def realtime_chat(request):
     """
@@ -54,9 +55,9 @@ def realtime_chat(request):
         f"Systems Review (SR): {history_data.get('SR', 'Not provided')}\n"
     )
 
-    # Insert the system prompt as the first message if not already present.
-    if len(messages) == 0 or messages[0].get("role") != "system" or "john" not in messages[0].get("content", "").lower():
-        messages.insert(0, {"role": "system", "content": system_prompt})
+    # Always insert the system prompt as the first message.
+    messages = [{"role": "system", "content": system_prompt}] + messages
+
 
     openai.api_key = os.getenv("OPENAI_API_KEY")
     try:
