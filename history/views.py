@@ -9,12 +9,16 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 
-# If you have updated your fetch_patient_data to work with BigQuery, import it.
+# Import your fetch_patient_data (which now works with BigQuery)
 from AIHistory import fetch_patient_data  # Assume this now works with BigQuery
 
 # Set up logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
+
+# Define a base path for saving raw MIMIC data.
+# (In production, you might use session storage or a caching system.)
+MIMIC_DATA_BASE = "/tmp"
 
 @csrf_exempt
 def generate_history(request):
@@ -26,7 +30,7 @@ def generate_history(request):
     if request.method == "POST":
         logger.info("POST request received - processing data.")
         try:
-            # Initialize BigQuery client instead of a local Postgres connection.
+            # Initialize BigQuery client.
             client = bigquery.Client()
             logger.info("BigQuery client initialized successfully.")
         except Exception as e:
@@ -35,23 +39,53 @@ def generate_history(request):
 
         try:
             logger.info("Fetching patient data from BigQuery...")
-            # Call your updated fetch_patient_data function, passing the BigQuery client.
-            patient, diagnoses, events, notes, lab_tests, prescriptions = fetch_patient_data(client)
+            # Adjust subject_id retrieval as needed:
+            subject_id = request.POST.get("subject_id", 12345)
+
+            # Call your updated fetch_patient_data function.
+            (patient,
+             diagnoses,
+             admissions,
+             notes,
+             lab_tests,
+             prescriptions,
+             icu_stays,
+             transfers,
+             procedures,
+             services,
+             microbiology) = fetch_patient_data(client, subject_id=subject_id)
 
             if patient:
                 logger.info(f"Patient data found: {patient}")
+                # Build a file name specific to this subject.
+                mimic_data_file = os.path.join(MIMIC_DATA_BASE, f"mimic_data_{subject_id}.json")
+                # Save the raw MIMIC data so that generate_questions can later use it.
+                raw_mimic_data = {
+                    "patient": patient,
+                    "admissions": admissions,
+                    "diagnoses": diagnoses,
+                    "procedures": procedures,
+                    "icu_stays": icu_stays,
+                    "transfers": transfers,
+                    "services": services,
+                    "lab_tests": lab_tests,
+                    "prescriptions": prescriptions,
+                    "microbiology": microbiology,
+                    "notes": notes,
+                }
+                try:
+                    with open(mimic_data_file, "w") as f:
+                        json.dump(raw_mimic_data, f)
+                        f.flush()            # Flush the internal buffer to disk
+                        os.fsync(f.fileno()) # Force write to disk
+                    logger.info(f"Saved raw MIMIC data to file: {mimic_data_file}")
+                except Exception as e:
+                    logger.error("Failed to save raw MIMIC data: %s", e)
+
                 logger.info("Generating patient history using ChatGPT (JSON format)...")
-
+                # Build a detailed prompt that instructs the model to incorporate all raw MIMIC fields.
                 prompt = f"""
-You are provided with the following patient data:
-Patient Info: {patient}
-Diagnoses: {diagnoses}
-Events: {events}
-Notes: {notes}
-Lab tests: {lab_tests}
-Prescriptions: {prescriptions}
-
-Please generate a structured patient history under these headings:
+You are provided with detailed MIMIC-III patient data (subject_id={subject_id}). Please analyze the data below and generate a structured patient history with the following headings:
 1) Presenting complaint (PC)
 2) History of presenting complaint (HPC)
 3) Past medical history (PMHx)
@@ -60,7 +94,42 @@ Please generate a structured patient history under these headings:
 6) Social history (SHx)
 7) Systems review (SR)
 
-Return the entire result as valid JSON with each heading as a field, like:
+Include as many relevant details as possible from the following data sources:
+
+Patient Info (PATIENTS):
+{patient}
+
+Admissions (ADMISSIONS):
+{admissions}
+
+Diagnoses (DIAGNOSES_ICD + D_ICD_DIAGNOSES):
+{diagnoses}
+
+Procedures (PROCEDURES_ICD + D_ICD_PROCEDURES):
+{procedures}
+
+ICU Stays (ICUSTAYS):
+{icu_stays}
+
+Transfers (TRANSFERS):
+{transfers}
+
+Services (SERVICES):
+{services}
+
+Lab Tests (LABEVENTS + D_LABITEMS):
+{lab_tests}
+
+Prescriptions (PRESCRIPTIONS):
+{prescriptions}
+
+Microbiology (MICROBIOLOGYEVENTS):
+{microbiology}
+
+Clinical Notes (NOTEEVENTS):
+{notes}
+
+Return the entire result as valid JSON with exactly these fields:
 {{
   "PC": "...",
   "HPC": "...",
@@ -71,14 +140,14 @@ Return the entire result as valid JSON with each heading as a field, like:
   "SR": "..."
 }}
 
-Make sure the JSON is valid and includes each heading, even if empty.
+Ensure that even if a section is empty, the field is present.
 """
                 logger.debug("Constructed prompt for generate_history: %s", prompt)
 
                 gpt_response = openai.ChatCompletion.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "You are a medical assistant providing structured patient histories."},
+                        {"role": "system", "content": "You are a medical assistant providing structured patient histories. Use all the provided raw MIMIC-III data to create a detailed and coherent summary."},
                         {"role": "user", "content": prompt}
                     ],
                     max_tokens=800,
@@ -107,11 +176,183 @@ Make sure the JSON is valid and includes each heading, even if empty.
             else:
                 logger.warning("No patient data found in BigQuery.")
                 return JsonResponse({"error": "No patient data found"}, status=404)
+
         except Exception as e:
             logger.exception("An error occurred while processing the request: %s", e)
             return JsonResponse({"error": f"An unexpected error occurred: {str(e)}"}, status=500)
+
     logger.warning("Invalid request method.")
     return JsonResponse({"error": "Invalid request method"}, status=400)
+
+
+@csrf_exempt
+def generate_questions(request):
+    """
+    This route takes either the original raw MIMIC-III patient data or the generated history details
+    as input and returns 4 related questions with their answers.
+    
+    Expected JSON payload may include:
+      - mimic_data: An object containing the raw MIMIC fields.
+      - history: An object containing the generated patient history details (fallback).
+      - subject_id: A patient identifier to load a saved file if mimic_data isn't provided.
+    
+    If neither mimic_data nor history is provided, it will try to load from a file using subject_id.
+    Returns a JSON object in the following format:
+    {
+      "questions": [
+         { "question": "<first question>", "answer": "<answer to first question>" },
+         { "question": "<second question>", "answer": "<answer to second question>" },
+         { "question": "<third question>", "answer": "<answer to third question>" },
+         { "question": "<fourth question>", "answer": "<answer to fourth question>" }
+      ]
+    }
+    """
+    logger.info("Received request to generate questions from MIMIC data or generated history.")
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+    
+    mimic_data = data.get("mimic_data")
+    # First, try to use generated history if provided.
+    if mimic_data is None and "history" in data:
+        mimic_data = data["history"]
+        logger.info("Using generated history from payload as fallback since mimic_data was not provided.")
+    
+    # If still not provided, attempt to load from a saved file using subject_id.
+    if mimic_data is None:
+        subject_id = data.get("subject_id")
+        if subject_id is None:
+            logger.error("No mimic_data or history provided and no subject_id available in request.")
+            return JsonResponse({'error': 'Missing mimic_data or history parameter and subject_id.'}, status=400)
+        mimic_data_file = os.path.join(MIMIC_DATA_BASE, f"mimic_data_{subject_id}.json")
+        if not os.path.exists(mimic_data_file):
+            logger.error("MIMIC data file does not exist for subject_id %s.", subject_id)
+            return JsonResponse({'error': 'No saved MIMIC data available.'}, status=400)
+        else:
+            try:
+                with open(mimic_data_file, "r") as f:
+                    file_contents = f.read().strip()
+                    logger.debug("Raw MIMIC data file contents: %s", file_contents)
+                    if not file_contents:
+                        raise ValueError("MIMIC data file is empty.")
+                    mimic_data = json.loads(file_contents)
+                logger.info("Loaded raw MIMIC data from saved file.")
+            except Exception as e:
+                logger.error("Failed to load saved MIMIC data: %s", e)
+                return JsonResponse({'error': f'Failed to load saved MIMIC data: {str(e)}'}, status=400)
+    
+    # Determine if we have full raw MIMIC data or just generated history details.
+    if isinstance(mimic_data, dict) and "patient" in mimic_data:
+        # Build a detailed prompt using all raw MIMIC-III fields.
+        prompt = f"""
+You are provided with detailed raw MIMIC-III patient data. Use all the details below to generate 4 clinically relevant questions and their concise answers.
+Do not include any extra explanation or commentary—return ONLY valid JSON in the following format:
+
+{{
+  "questions": [
+    {{
+      "question": "<first question>",
+      "answer": "<answer to first question>"
+    }},
+    {{
+      "question": "<second question>",
+      "answer": "<answer to second question>"
+    }},
+    {{
+      "question": "<third question>",
+      "answer": "<answer to third question>"
+    }},
+    {{
+      "question": "<fourth question>",
+      "answer": "<answer to fourth question>"
+    }}
+  ]
+}}
+
+Patient Info (PATIENTS): {mimic_data.get("patient", "")}
+Admissions (ADMISSIONS): {mimic_data.get("admissions", "")}
+Diagnoses (DIAGNOSES_ICD + D_ICD_DIAGNOSES): {mimic_data.get("diagnoses", "")}
+Procedures (PROCEDURES_ICD + D_ICD_PROCEDURES): {mimic_data.get("procedures", "")}
+ICU Stays (ICUSTAYS): {mimic_data.get("icu_stays", "")}
+Transfers (TRANSFERS): {mimic_data.get("transfers", "")}
+Services (SERVICES): {mimic_data.get("services", "")}
+Lab Tests (LABEVENTS + D_LABITEMS): {mimic_data.get("lab_tests", "")}
+Prescriptions (PRESCRIPTIONS): {mimic_data.get("prescriptions", "")}
+Microbiology (MICROBIOLOGYEVENTS): {mimic_data.get("microbiology", "")}
+Clinical Notes (NOTEEVENTS): {mimic_data.get("notes", "")}
+"""
+    else:
+        # Fallback prompt using generated history details.
+        fallback_details = json.dumps(mimic_data) if isinstance(mimic_data, dict) else mimic_data
+        prompt = f"""
+You are provided with a patient history with the following fields (PC, HPC, PMHx, DHx, FHx, SHx, SR).
+Use these details to generate 4 clinically relevant questions and their concise answers.
+Do not include any extra explanation or commentary—return ONLY valid JSON in the following format:
+
+{{
+  "questions": [
+    {{
+      "question": "<first question>",
+      "answer": "<answer to first question>"
+    }},
+    {{
+      "question": "<second question>",
+      "answer": "<answer to second question>"
+    }},
+    {{
+      "question": "<third question>",
+      "answer": "<answer to third question>"
+    }},
+    {{
+      "question": "<fourth question>",
+      "answer": "<answer to fourth question>"
+    }}
+  ]
+}}
+
+Here is the patient history:
+{fallback_details}
+"""
+    logger.debug("Constructed prompt for generate_questions: %s", prompt)
+
+    try:
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+        logger.info("Sending prompt to OpenAI for generate_questions...")
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a medical assistant that generates relevant clinical questions and answers based on detailed patient data. Output ONLY valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=500,
+        )
+        logger.info("Received response from OpenAI for generate_questions.")
+    except Exception as e:
+        logger.error("Error during OpenAI request for generate_questions: %s", e)
+        return JsonResponse({'error': str(e)}, status=500)
+    
+    ai_message = response.choices[0].message['content']
+    logger.debug("Raw AI message for generate_questions: %s", ai_message)
+    
+    try:
+        result_json = json.loads(ai_message)
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse AI response as JSON in generate_questions: %s", e)
+        json_match = re.search(r"\{.*\}", ai_message, re.DOTALL)
+        if json_match:
+            try:
+                result_json = json.loads(json_match.group(0))
+                logger.info("Extracted JSON via regex fallback in generate_questions.")
+            except json.JSONDecodeError as e2:
+                logger.error("Fallback JSON extraction failed in generate_questions: %s", e2)
+                return JsonResponse({'error': 'Failed to parse AI response as JSON.'}, status=500)
+        else:
+            return JsonResponse({'error': 'Failed to parse AI response as JSON.'}, status=500)
+    
+    logger.info("Returning result from generate_questions: %s", result_json)
+    return JsonResponse(result_json)
 
 @csrf_exempt
 def get_conditions(request):
@@ -214,103 +455,6 @@ User's Question:
     return JsonResponse({"error": "Invalid request method"}, status=400)
 
 
-@csrf_exempt
-def generate_questions(request):
-    """
-    New route that takes a patient history as input and returns 4 related questions along with their answers.
-    Expects a JSON payload with the key:
-      - history: The patient's history (a structured string or JSON).
-    Returns a JSON object with the following format:
-    {
-      "questions": [
-         { "question": "<first question>", "answer": "<answer to first question>" },
-         { "question": "<second question>", "answer": "<answer to second question>" },
-         { "question": "<third question>", "answer": "<answer to third question>" },
-         { "question": "<fourth question>", "answer": "<answer to fourth question>" }
-      ]
-    }
-    """
-    logger.info("Received request to generate questions from history.")
-    try:
-        data = json.loads(request.body)
-    except json.JSONDecodeError:
-        return JsonResponse({'error': 'Invalid JSON'}, status=400)
-    
-    history = data.get("history")
-    if history is None:
-        return JsonResponse({'error': 'Missing history parameter.'}, status=400)
-    
-    prompt = f"""
-You are provided with the following patient history:
-{history}
-
-Generate 4 questions that are related to this patient history.
-For each question, also provide a concise answer.
-Return ONLY a JSON object exactly in this format (do not include any additional text or explanation):
-
-{{
-  "questions": [
-    {{
-      "question": "<first question>",
-      "answer": "<answer to first question>"
-    }},
-    {{
-      "question": "<second question>",
-      "answer": "<answer to second question>"
-    }},
-    {{
-      "question": "<third question>",
-      "answer": "<answer to third question>"
-    }},
-    {{
-      "question": "<fourth question>",
-      "answer": "<answer to fourth question>"
-    }}
-  ]
-}}
-
-Ensure the JSON is valid.
-"""
-    logger.debug("Constructed prompt for generate_questions: %s", prompt)
-
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-    
-    try:
-        logger.info("Sending prompt to OpenAI for generate_questions...")
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a medical assistant that generates relevant questions and answers based on patient history. Output ONLY valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=300,
-        )
-        logger.info("Received response from OpenAI for generate_questions.")
-    except Exception as e:
-        logger.error("Error during OpenAI request for generate_questions: %s", e)
-        return JsonResponse({'error': str(e)}, status=500)
-    
-    ai_message = response.choices[0].message['content']
-    logger.debug("Raw AI message for generate_questions: %s", ai_message)
-    
-    try:
-        result_json = json.loads(ai_message)
-    except json.JSONDecodeError as e:
-        logger.error("Failed to parse AI response as JSON in generate_questions: %s", e)
-        json_match = re.search(r"\{.*\}", ai_message, re.DOTALL)
-        if json_match:
-            try:
-                result_json = json.loads(json_match.group(0))
-                logger.info("Extracted JSON via regex fallback in generate_questions.")
-            except json.JSONDecodeError as e2:
-                logger.error("Fallback JSON extraction failed in generate_questions: %s", e2)
-                return JsonResponse({'error': 'Failed to parse AI response as JSON.'}, status=500)
-        else:
-            return JsonResponse({'error': 'Failed to parse AI response as JSON.'}, status=500)
-    
-    logger.info("Returning result from generate_questions: %s", result_json)
-    return JsonResponse(result_json)
 
 
 def example_endpoint(request):
