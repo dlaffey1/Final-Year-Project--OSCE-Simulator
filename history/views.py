@@ -172,7 +172,23 @@ Ensure that even if a section is empty, the field is present.
                     }
 
                 logger.info(f"Final structured history: {history_data}")
-                return JsonResponse({"history": history_data}, status=200)
+
+                # Extract the right condition from diagnoses.
+                # Assume diagnoses is a list of dictionaries with keys "icd_code" and "description".
+                if diagnoses and isinstance(diagnoses, list) and len(diagnoses) > 0:
+                    first_diag = diagnoses[0]
+                    if first_diag.get("description"):
+                        right_condition = first_diag["description"]
+                    elif first_diag.get("icd_code"):
+                        right_condition = first_diag["icd_code"]
+                    else:
+                        right_condition = "Unknown"
+                else:
+                    right_condition = "Unknown"
+
+                logger.info(f"Extracted right condition: {right_condition}")
+
+                return JsonResponse({"history": history_data, "right_condition": right_condition}, status=200)
             else:
                 logger.warning("No patient data found in BigQuery.")
                 return JsonResponse({"error": "No patient data found"}, status=404)
@@ -183,7 +199,6 @@ Ensure that even if a section is empty, the field is present.
 
     logger.warning("Invalid request method.")
     return JsonResponse({"error": "Invalid request method"}, status=400)
-
 
 @csrf_exempt
 def generate_questions(request):
