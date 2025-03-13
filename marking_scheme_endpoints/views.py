@@ -34,14 +34,14 @@ def evaluate_history(request):
     guessed_condition = data.get('guessed_condition')
     right_disease = data.get('right_disease')
     
-    logger.info("Extracted parameters: expected_history length=%s, time_taken=%s, questions_count=%s, user_response length=%s, conversation_logs provided=%s, guessed_condition provided=%s, right_disease provided=%s",
+    logger.info("Extracted parameters: expected_history length=%s, time_taken=%s, questions_count=%s, user_response length=%s, conversation_logs=%s, guessed_condition=%s, right_disease=%s",
                 len(expected_history) if expected_history else 0,
                 time_taken,
                 questions_count,
                 len(user_response) if user_response else 0,
-                bool(conversation_logs),
-                bool(guessed_condition),
-                bool(right_disease))
+                conversation_logs,
+                guessed_condition,
+                right_disease)
     
     # Validate required parameters.
     if expected_history is None or time_taken is None or questions_count is None or user_response is None:
