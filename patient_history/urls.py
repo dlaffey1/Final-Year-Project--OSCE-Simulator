@@ -16,14 +16,14 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 from django.contrib import admin
-from history.views import generate_history, ask_question, get_history_categories, get_conditions, generate_questions, get_general_condition_categories, get_conditions_by_category, get_conditions_by_category_profile, generate_history_with_profile
+from history.views import generate_history, ask_question, get_history_categories, get_conditions, generate_questions, get_general_condition_categories, get_conditions_by_category, get_conditions_by_category_profile, generate_history_with_profile, get_category_by_condition_profile
 from history import views
 from django.conf import settings
 from django.conf.urls.static import static
 urlpatterns = [
     path("admin/", admin.site.urls),
     path('api/', include('marking_scheme_endpoints.urls')),
-    path('realtime/', include('realtime.urls')),
+    path('realtime-endpoints/', include('realtime_endpoints.urls')),
     path("generate-history/", generate_history, name="generate_history"),
     path("ask-question/", ask_question, name="ask_question"),
     path("get-history-categories/", get_history_categories, name="get_history_categories"),
@@ -33,6 +33,7 @@ urlpatterns = [
     path('get_conditions_by_category/', get_conditions_by_category, name = 'get_conditions_by_category'),
     path('get_conditions_by_category_profile/', get_conditions_by_category_profile, name='get_conditions_by_category_profile'),
     path("generate-history-with-profile/", generate_history_with_profile, name="generate_history_with_profile"),
+    path('get-category-by-condition-profile/', get_category_by_condition_profile, name='get_marking_results_by_category'),
 ] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
 

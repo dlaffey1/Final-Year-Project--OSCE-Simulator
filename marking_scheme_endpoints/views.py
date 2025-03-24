@@ -5,9 +5,37 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import openai
 import logging
+from dotenv import load_dotenv
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
+from supabase import create_client, Client
+
+SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+def save_marking_result(result_json, data):
+    response = supabase.table("history_marking_results").insert({
+        "user_id": data.get("user_id"),  # New field to store the user ID
+        "expected_history": data.get("expected_history"),
+        "user_response": data.get("user_response"),
+        "conversation_logs": data.get("conversation_logs"),
+        "guessed_condition": data.get("guessed_condition"),
+        "right_disease": data.get("right_disease"),
+        "time_taken": data.get("time_taken"),
+        "questions_count": data.get("questions_count"),
+        "overall_score": result_json.get("overall_score"),
+        "overall_feedback": result_json.get("overall_feedback"),
+        "section_scores": result_json.get("section_scores"),
+        "section_feedback": result_json.get("section_feedback"),
+        "history_taking_feedback": result_json.get("history_taking_feedback"),
+        "history_taking_score": result_json.get("history_taking_score"),
+        "profile_questions": result_json.get("profile_questions"),
+    }).execute()
+    logger.info("Supabase insert response: %s", response)
+    return response
+
 @csrf_exempt
 def evaluate_history(request):
     logger.info("evaluate_history: Received a request.")
@@ -32,6 +60,7 @@ def evaluate_history(request):
     conversation_logs = data.get('conversation_logs')
     guessed_condition = data.get('guessed_condition')
     right_disease = data.get('right_disease')
+    user_id = data.get('user_id')
 
     logger.info("Extracted parameters: expected_history length=%s, time_taken=%s, questions_count=%s, user_response length=%s, conversation_logs=%s, guessed_condition=%s, right_disease=%s",
                 len(expected_history) if expected_history else 0,
@@ -128,24 +157,38 @@ Make sure the JSON is valid.
             "section_feedback": {}
         }
 
-    # Assess history-taking if `conversation_logs`, `guessed_condition`, and `right_disease` exist
+    # Assess history-taking if conversation_logs, guessed_condition, and right_disease exist.
     if conversation_logs and guessed_condition and right_disease:
         logger.info("Calling assess_history_taking for history-taking feedback...")
-        
         history_taking_payload = {
             "conversation_logs": conversation_logs,
             "mimic_icd_code": right_disease
         }
-
         assess_response = assess_history_taking(history_taking_payload)
-
         if assess_response.status_code == 200:
-            result_json["history_taking_feedback"] = json.loads(assess_response.content)
+            try:
+                history_taking_data = json.loads(assess_response.content)
+            except Exception as e:
+                logger.error("Error parsing history-taking feedback: " + str(e))
+                history_taking_data = {}
+            result_json["history_taking_feedback"] = history_taking_data.get("feedback", "")
+            result_json["history_taking_score"] = history_taking_data.get("score", "0")
+            result_json["profile_questions"] = history_taking_data.get("profile_questions", [])
         else:
-            result_json["history_taking_feedback"] = {"error": "Could not retrieve history-taking feedback."}
+            result_json["history_taking_feedback"] = "Could not retrieve history-taking feedback."
+            result_json["history_taking_score"] = "0"
+            result_json["profile_questions"] = []
+
+    # Save the evaluation result in Supabase.
+    try:
+        save_marking_result(result_json, data)
+    except Exception as e:
+        logger.error("Error saving marking result: %s", e)
 
     logger.info("Returning result: %s", result_json)
     return JsonResponse(result_json)
+
+
 @csrf_exempt
 def assess_history_taking(data):
     """
@@ -153,7 +196,6 @@ def assess_history_taking(data):
     Looks up the mapped Text2DT condition, retrieves the expected question profile,
     and compares the conversation logs to provide feedback.
     """
-
     logger.info("assess_history_taking: Function activated.")
     print("assess_history_taking: Function activated.")
 
@@ -168,7 +210,6 @@ def assess_history_taking(data):
         logger.error("assess_history_taking: Missing required parameters.")
         return JsonResponse({'error': 'Missing required parameters.'}, status=400)
 
-    # Load `text2dt_mimic_mapping1.json`
     mapping_file = "text2dt_mimic_mapping1.json"
     if not os.path.exists(mapping_file):
         logger.error(f"assess_history_taking: Mapping file {mapping_file} not found.")
@@ -182,20 +223,15 @@ def assess_history_taking(data):
         logger.error(f"assess_history_taking: Error reading {mapping_file}: {e}")
         return JsonResponse({'error': 'Error reading mapping file.'}, status=500)
 
-    # Normalize ICD-9 format (remove dots, strip leading zeros)
     normalized_mimic_icd = mimic_icd_code.replace(".", "").lstrip("0")
 
-    # Get all available ICD-9 codes for debugging
     available_icd9_codes = [
         code.replace(".", "").lstrip("0") for record in text2dt_mapping
         for code in record.get("mapped_mimic_group", {}).get("icd9_codes", [])
     ]
-
-    # Print available codes before attempting to match
     logger.debug(f"Available ICD-9 codes in JSON file (normalized): {json.dumps(available_icd9_codes, indent=2)}")
     print(f"Available ICD-9 codes in JSON file (normalized): {json.dumps(available_icd9_codes, indent=2)}")
 
-    # Find the matching condition
     matched_condition = next(
         (
             record for record in text2dt_mapping
@@ -205,16 +241,14 @@ def assess_history_taking(data):
     )
 
     if not matched_condition:
-        logger.warning(f"❌ No match found for ICD-9 code: {mimic_icd_code} (normalized: {normalized_mimic_icd})")
+        logger.warning(f"No match found for ICD-9 code: {mimic_icd_code} (normalized: {normalized_mimic_icd})")
         return JsonResponse({'error': f'No profile available for condition {mimic_icd_code}.'}, status=404)
 
     text2dt_condition = matched_condition.get("text2dt_condition", "Unknown Condition")
     expected_profile = matched_condition.get("profile", [])
+    logger.info(f"Found profile for condition '{text2dt_condition}'.")
+    print(f"Found profile for condition '{text2dt_condition}'.")
 
-    logger.info(f"✅ Found profile for condition '{text2dt_condition}'.")
-    print(f"✅ Found profile for condition '{text2dt_condition}'.")
-
-    # Construct AI prompt
     prompt = f"""
 The user conducted a patient interview and provided the following conversation logs:
 
@@ -224,33 +258,38 @@ Conversation Logs:
 The expected structured questioning profile for this condition '{text2dt_condition}' is:
 {json.dumps(expected_profile, indent=2)}
 
-Compare the user's conversation logs to the expected profile and provide feedback.
+Please translate the above profile questions from Chinese to English, and ensure that the detailed feedback you provide is entirely in English (do not include any Chinese).
+Then, compare the user's conversation logs to the translated profile and provide detailed feedback on the history-taking performance.
+
+Return a JSON object exactly in this format:
+{{
+  "feedback": "<detailed feedback for history-taking in English>",
+  "score": "<percentage score (0-100)>",
+  "profile_questions": <translated profile questions as an array>
+}}
+
+Ensure the JSON is valid and contains no additional text.
 """
+    logger.debug(f"Constructed AI prompt:\n{prompt}")
 
-    logger.debug(f"assess_history_taking: Constructed AI prompt:\n{prompt}")
-
-    # Set OpenAI API Key
     openai.api_key = os.getenv("OPENAI_API_KEY")
 
     try:
-        logger.info("assess_history_taking: Sending prompt to OpenAI for evaluation...")
+        logger.info("Sending prompt to OpenAI for evaluation...")
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             max_tokens=400,
         )
-        logger.info("assess_history_taking: Received response from OpenAI.")
-
-        # Parse AI response
+        logger.info("Received response from OpenAI for assessment.")
         feedback_json = json.loads(response.choices[0].message["content"])
-        logger.info("assess_history_taking: Successfully parsed AI response.")
-
+        logger.info("Successfully parsed AI response for assessment.")
     except Exception as e:
-        logger.error(f"assess_history_taking: Error during OpenAI request: {e}")
+        logger.error(f"Error during OpenAI request: {e}")
         return JsonResponse({'error': str(e)}, status=500)
 
-    logger.info("assess_history_taking: Returning feedback response.")
+    logger.info("Returning feedback response from assess_history_taking.")
     return JsonResponse(feedback_json)
 
 # ------------------------------

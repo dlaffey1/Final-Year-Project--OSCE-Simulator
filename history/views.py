@@ -614,13 +614,35 @@ def get_conditions_by_category_profile(request):
 
     return JsonResponse({"conditions": sorted(conditions)}, status=200)
 
-
-import json
-import os
-import logging
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from .views import generate_history  # Import existing generate_history function
+@csrf_exempt
+def get_category_by_condition_profile(request):
+    """
+    Fetches the category for a given condition from `text2dt_mimic_mapping1.json`.
+    Expects a query parameter "condition" representing the mimic condition.
+    Returns a JSON object with the category.
+    """
+    logger.info("Received request to fetch category by condition (profile version).")
+    
+    condition = request.GET.get("condition", "").strip()
+    if not condition:
+        return JsonResponse({"error": "Condition parameter is required."}, status=400)
+    
+    text2dt_mapping = load_text2dt_mapping()
+    if text2dt_mapping is None:
+        return JsonResponse({"error": "Mapping file not found or could not be loaded."}, status=500)
+    
+    # Find the first entry that matches the given condition.
+    matched_entry = next(
+        (entry for entry in text2dt_mapping 
+         if entry.get("mapped_mimic_group", {}).get("mimic_condition") == condition),
+        None
+    )
+    
+    if not matched_entry:
+        return JsonResponse({"error": f"No category found for condition '{condition}'"}, status=404)
+    
+    category = matched_entry.get("category", "Unknown")
+    return JsonResponse({"category": category}, status=200)
 
 logger = logging.getLogger(__name__)
 
@@ -643,15 +665,19 @@ def generate_history_with_profile(request):
     This function generates a structured patient history, but **only** for conditions
     that exist in the `text2dt_mimic_mapping1.json` mapping file.
 
-    Expected JSON payload:
+    If no condition is provided or if the optional "random" parameter is true,
+    a random condition from the mapping file is used.
+
+    Expected JSON payload (optional):
     {
-        "condition": "<mimic_condition>"
+        "condition": "<mimic_condition>",  // Optional; if omitted, a random condition is chosen.
+        "random": true                     // Optional; if true, always choose a random condition.
     }
 
     Returns:
     {
         "history": { ... },
-        "right_condition": "<mimic_condition>"
+        "right_condition": "<mimic_icd_code>"
     }
     """
     logger.info("Received request to generate history with profile.")
@@ -661,31 +687,59 @@ def generate_history_with_profile(request):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
-    condition = data.get("condition", "").strip()
-    if not condition:
-        return JsonResponse({"error": "Missing required 'condition' parameter."}, status=400)
-
-    # Load the mapping file
+    # Load mapping file
     text2dt_mapping = load_text2dt_mapping()
     if text2dt_mapping is None:
         return JsonResponse({"error": "Mapping file not found or could not be loaded."}, status=500)
 
-    # Find the matching entry based on the condition name
-    matched_entry = next(
-        (entry for entry in text2dt_mapping if entry["mapped_mimic_group"]["mimic_condition"] == condition),
-        None
-    )
+    def extract_icd_code(entry):
+        group = entry.get("mapped_mimic_group", {})
+        # If icd9_codes exists and is a non-empty list, use its first element.
+        icd_codes = group.get("icd9_codes")
+        if icd_codes and isinstance(icd_codes, list) and len(icd_codes) > 0:
+            return icd_codes[0]
+        # Otherwise fallback to mimic_condition_number if available,
+        # or finally to mimic_condition.
+        return group.get("mimic_condition_number", group.get("mimic_condition", "Unknown"))
 
-    if not matched_entry:
-        logger.warning(f"Condition '{condition}' not found in mapping file.")
-        return JsonResponse({"error": f"Condition '{condition}' is not in the MIMIC mapping."}, status=404)
-
-    # Prepare a custom request to call `generate_history` with the filtered condition
+    # Determine condition ICD code.
+    if data.get("random", False):
+        import random
+        random_entry = random.choice(text2dt_mapping)
+        condition_icd = extract_icd_code(random_entry)
+        logger.info(f"Random flag is true. Selected random condition ICD code: {condition_icd}")
+    else:
+        condition = data.get("condition", "").strip()
+        if not condition:
+            import random
+            random_entry = random.choice(text2dt_mapping)
+            condition_icd = extract_icd_code(random_entry)
+            logger.info(f"No condition provided. Selected random condition ICD code: {condition_icd}")
+        else:
+            matched_entry = next(
+                (entry for entry in text2dt_mapping if entry["mapped_mimic_group"].get("mimic_condition") == condition),
+                None
+            )
+            if not matched_entry:
+                logger.warning(f"Condition '{condition}' not found in mapping file.")
+                return JsonResponse({"error": f"Condition '{condition}' is not in the MIMIC mapping."}, status=404)
+            condition_icd = extract_icd_code(matched_entry)
+    
+    # Prepare a custom request body to call `generate_history` with the selected condition ICD code.
     request_body = {
-        "condition": condition  # Pass only the requested condition
+        "condition": condition_icd  # Pass the mimic ICD code.
     }
 
-    # Convert it to JSON format and update the request object
-    request._body = json.dumps(request_body).encode("utf-8")  # Overwrite request body
-
-    return generate_history(request)  # Call existing function with the new request
+    # Overwrite the request body with the custom payload.
+    request._body = json.dumps(request_body).encode("utf-8")
+    response = generate_history(request)
+    
+    # Capture the response data and add the mimic ICD code.
+    try:
+        response_data = json.loads(response.content)
+    except Exception as e:
+        logger.error("Error parsing response from generate_history: " + str(e))
+        return JsonResponse({"error": "Internal server error"}, status=500)
+    
+    response_data["right_condition"] = condition_icd
+    return JsonResponse(response_data)
