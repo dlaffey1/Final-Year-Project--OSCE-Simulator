@@ -16,7 +16,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 from django.contrib import admin
-from history.views import generate_history, ask_question, get_history_categories, get_conditions, generate_questions, get_general_condition_categories, get_conditions_by_category
+from history.views import generate_history, ask_question, get_history_categories, get_conditions, generate_questions, get_general_condition_categories, get_conditions_by_category, get_conditions_by_category_profile, generate_history_with_profile
 from history import views
 from django.conf import settings
 from django.conf.urls.static import static
@@ -30,7 +30,9 @@ urlpatterns = [
     path("get-conditions/", get_conditions, name="get_conditions"),
     path('generate-questions/', generate_questions, name='generate_questions'),
     path('get_general_condition_categories/', get_general_condition_categories, name = 'get_general_condition_categories'),
-    path('get_conditions_by_category/', get_conditions_by_category, name = 'get_conditions_by_category')
+    path('get_conditions_by_category/', get_conditions_by_category, name = 'get_conditions_by_category'),
+    path('get_conditions_by_category_profile/', get_conditions_by_category_profile, name='get_conditions_by_category_profile'),
+    path("generate-history-with-profile/", generate_history_with_profile, name="generate_history_with_profile"),
 ] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
 

@@ -16,24 +16,23 @@ def evaluate_history(request):
     # Log the raw request body.
     print("Incoming request body:", request.body)
     logger.debug("Incoming request body: %s", request.body)
-    
+
     try:
         data = json.loads(request.body)
         logger.info("Request JSON parsed successfully.")
     except json.JSONDecodeError as e:
         logger.error("Invalid JSON received: %s", e)
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
-    
+
     # Extract parameters.
     expected_history = data.get('expected_history')
     time_taken = data.get('time_taken')
     questions_count = data.get('questions_count')
     user_response = data.get('user_response')
-    # Optional parameters for decision tree evaluation.
     conversation_logs = data.get('conversation_logs')
     guessed_condition = data.get('guessed_condition')
     right_disease = data.get('right_disease')
-    
+
     logger.info("Extracted parameters: expected_history length=%s, time_taken=%s, questions_count=%s, user_response length=%s, conversation_logs=%s, guessed_condition=%s, right_disease=%s",
                 len(expected_history) if expected_history else 0,
                 time_taken,
@@ -42,12 +41,12 @@ def evaluate_history(request):
                 conversation_logs,
                 guessed_condition,
                 right_disease)
-    
+
     # Validate required parameters.
     if expected_history is None or time_taken is None or questions_count is None or user_response is None:
         logger.error("Missing one or more required parameters.")
         return JsonResponse({'error': 'Missing one or more required parameters.'}, status=400)
-    
+
     # Build the evaluation prompt.
     prompt = f"""
 You are provided with the expected patient history and a user's response.
@@ -95,7 +94,7 @@ Make sure the JSON is valid.
 
     # Set your OpenAI API key.
     openai.api_key = os.getenv("OPENAI_API_KEY")
-    
+
     try:
         logger.info("Sending prompt to OpenAI...")
         response = openai.ChatCompletion.create(
@@ -111,10 +110,10 @@ Make sure the JSON is valid.
     except Exception as e:
         logger.error("Error during OpenAI request: %s", e)
         return JsonResponse({'error': str(e)}, status=500)
-    
+
     ai_message = response.choices[0].message['content']
     logger.debug("Raw AI message: %s", ai_message)
-    
+
     try:
         result_json = json.loads(ai_message)
         logger.info("AI response parsed successfully as JSON.")
@@ -128,69 +127,131 @@ Make sure the JSON is valid.
             "section_scores": {},
             "section_feedback": {}
         }
-    
-    # If conversation_logs, guessed_condition, and right_disease are provided,
-    # generate decision tree feedback and include the generated decision tree.
+
+    # Assess history-taking if `conversation_logs`, `guessed_condition`, and `right_disease` exist
     if conversation_logs and guessed_condition and right_disease:
-        tree_file = "decision_tree.json"
-        decision_tree = None
-        if os.path.exists(tree_file):
-            logger.info("Decision tree file found. Loading tree from file for decision tree feedback.")
-            try:
-                with open(tree_file, "r") as f:
-                    decision_tree = json.load(f)
-            except Exception as e:
-                logger.error("Error reading decision tree file: %s", e)
-        if not decision_tree:
-            tree_prompt = (
-                f"Generate a decision tree for clinical history taking for the condition '{right_disease}'. "
-                "The decision tree should include a series of logic-based questions leading to the correct diagnosis. "
-                "Return the tree in valid JSON format with keys for each decision node."
-            )
-            try:
-                logger.info("No decision tree available. Requesting decision tree generation from OpenAI...")
-                tree_response = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": tree_prompt}],
-                    temperature=0.7,
-                    max_tokens=500,
-                )
-                tree_message = tree_response.choices[0].message['content']
-                decision_tree = json.loads(tree_message)
-                with open(tree_file, "w") as f:
-                    json.dump(decision_tree, f, indent=4)
-            except Exception as e:
-                logger.error("Error generating decision tree: %s", e)
-                decision_tree = {"error": "Decision tree not available."}
+        logger.info("Calling assess_history_taking for history-taking feedback...")
         
-        dt_prompt = (
-            f"Using the following decision tree for the correct condition '{right_disease}':\n{json.dumps(decision_tree, indent=2)}\n\n"
-            f"Evaluate the following conversation logs for clinical history taking. "
-            f"The user guessed the condition as '{guessed_condition}', but the correct condition is '{right_disease}'.\n"
-            f"Conversation Logs:\n{conversation_logs}\n\n"
-            "Provide detailed feedback on where the user can improve their history taking abilities according to the decision tree logic. "
-            "Return the feedback in valid JSON format with the key 'decision_tree_feedback'."
-        )
-        try:
-            logger.info("Sending decision tree feedback prompt to OpenAI...")
-            dt_response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": dt_prompt}],
-                temperature=0.7,
-                max_tokens=300,
-            )
-            dt_message = dt_response.choices[0].message['content']
-            dt_feedback = json.loads(dt_message)
-            result_json['decision_tree_feedback'] = dt_feedback.get('decision_tree_feedback', dt_feedback)
-        except Exception as e:
-            logger.error("Error generating decision tree feedback: %s", e)
-            result_json['decision_tree_feedback'] = f"Error generating decision tree feedback: {str(e)}"
-        
-        result_json['decision_tree'] = decision_tree
+        history_taking_payload = {
+            "conversation_logs": conversation_logs,
+            "mimic_icd_code": right_disease
+        }
+
+        assess_response = assess_history_taking(history_taking_payload)
+
+        if assess_response.status_code == 200:
+            result_json["history_taking_feedback"] = json.loads(assess_response.content)
+        else:
+            result_json["history_taking_feedback"] = {"error": "Could not retrieve history-taking feedback."}
 
     logger.info("Returning result: %s", result_json)
     return JsonResponse(result_json)
+@csrf_exempt
+def assess_history_taking(data):
+    """
+    Evaluates the user's history-taking process based on the real disease.
+    Looks up the mapped Text2DT condition, retrieves the expected question profile,
+    and compares the conversation logs to provide feedback.
+    """
 
+    logger.info("assess_history_taking: Function activated.")
+    print("assess_history_taking: Function activated.")
+
+    # Log incoming data
+    logger.debug(f"Received data: {json.dumps(data, ensure_ascii=False, indent=2)}")
+    print(f"Received data: {json.dumps(data, ensure_ascii=False, indent=2)}")
+
+    conversation_logs = data.get("conversation_logs")
+    mimic_icd_code = data.get("mimic_icd_code")
+
+    if not conversation_logs or not mimic_icd_code:
+        logger.error("assess_history_taking: Missing required parameters.")
+        return JsonResponse({'error': 'Missing required parameters.'}, status=400)
+
+    # Load `text2dt_mimic_mapping1.json`
+    mapping_file = "text2dt_mimic_mapping1.json"
+    if not os.path.exists(mapping_file):
+        logger.error(f"assess_history_taking: Mapping file {mapping_file} not found.")
+        return JsonResponse({'error': 'Mapping file not found.'}, status=500)
+
+    try:
+        with open(mapping_file, "r", encoding="utf-8") as f:
+            text2dt_mapping = json.load(f)
+        logger.info(f"assess_history_taking: Successfully loaded {mapping_file}.")
+    except Exception as e:
+        logger.error(f"assess_history_taking: Error reading {mapping_file}: {e}")
+        return JsonResponse({'error': 'Error reading mapping file.'}, status=500)
+
+    # Normalize ICD-9 format (remove dots, strip leading zeros)
+    normalized_mimic_icd = mimic_icd_code.replace(".", "").lstrip("0")
+
+    # Get all available ICD-9 codes for debugging
+    available_icd9_codes = [
+        code.replace(".", "").lstrip("0") for record in text2dt_mapping
+        for code in record.get("mapped_mimic_group", {}).get("icd9_codes", [])
+    ]
+
+    # Print available codes before attempting to match
+    logger.debug(f"Available ICD-9 codes in JSON file (normalized): {json.dumps(available_icd9_codes, indent=2)}")
+    print(f"Available ICD-9 codes in JSON file (normalized): {json.dumps(available_icd9_codes, indent=2)}")
+
+    # Find the matching condition
+    matched_condition = next(
+        (
+            record for record in text2dt_mapping
+            if normalized_mimic_icd in [code.replace(".", "").lstrip("0") for code in record.get("mapped_mimic_group", {}).get("icd9_codes", [])]
+        ),
+        None
+    )
+
+    if not matched_condition:
+        logger.warning(f"❌ No match found for ICD-9 code: {mimic_icd_code} (normalized: {normalized_mimic_icd})")
+        return JsonResponse({'error': f'No profile available for condition {mimic_icd_code}.'}, status=404)
+
+    text2dt_condition = matched_condition.get("text2dt_condition", "Unknown Condition")
+    expected_profile = matched_condition.get("profile", [])
+
+    logger.info(f"✅ Found profile for condition '{text2dt_condition}'.")
+    print(f"✅ Found profile for condition '{text2dt_condition}'.")
+
+    # Construct AI prompt
+    prompt = f"""
+The user conducted a patient interview and provided the following conversation logs:
+
+Conversation Logs:
+{conversation_logs}
+
+The expected structured questioning profile for this condition '{text2dt_condition}' is:
+{json.dumps(expected_profile, indent=2)}
+
+Compare the user's conversation logs to the expected profile and provide feedback.
+"""
+
+    logger.debug(f"assess_history_taking: Constructed AI prompt:\n{prompt}")
+
+    # Set OpenAI API Key
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+
+    try:
+        logger.info("assess_history_taking: Sending prompt to OpenAI for evaluation...")
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=400,
+        )
+        logger.info("assess_history_taking: Received response from OpenAI.")
+
+        # Parse AI response
+        feedback_json = json.loads(response.choices[0].message["content"])
+        logger.info("assess_history_taking: Successfully parsed AI response.")
+
+    except Exception as e:
+        logger.error(f"assess_history_taking: Error during OpenAI request: {e}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+    logger.info("assess_history_taking: Returning feedback response.")
+    return JsonResponse(feedback_json)
 
 # ------------------------------
 # New Endpoint: generate_tree

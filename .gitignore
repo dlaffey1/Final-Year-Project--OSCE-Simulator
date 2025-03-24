@@ -2,3 +2,6 @@
 .env
 venv/venv/
 venv/lib
+Text2DT_train.json
+text2dt_mimic_mapping.json
+verify_mapping.py

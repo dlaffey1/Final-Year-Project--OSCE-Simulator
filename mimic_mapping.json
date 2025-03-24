@@ -1,0 +1,196 @@
+{
+  "Salmonella infections": [
+    "0030",
+    "0031",
+    "0038",
+    "0039"
+  ],
+  "Shigella infections": [
+    "0041",
+    "0048",
+    "0049"
+  ],
+  "Food poisoning": [
+    "00581",
+    "0059"
+  ],
+  "Intestinal infections due to various bacteria": [
+    "00804",
+    "00841",
+    "00843",
+    "00845",
+    "00847",
+    "0085",
+    "00861",
+    "00862",
+    "00863",
+    "00869",
+    "0088"
+  ],
+  "Infectious colitis, enteritis, and gastroenteritis": [
+    "0090",
+    "0091",
+    "0092",
+    "0093"
+  ],
+  "Tuberculosis of lung": [
+    "01123",
+    "01136"
+  ],
+  "Pulmonary tuberculosis": [
+    "01190",
+    "01193",
+    "01194"
+  ],
+  "Tuberculous meningitis": [
+    "01300",
+    "01304"
+  ],
+  "Tuberculous abscess": [
+    "01330",
+    "01354"
+  ],
+  "Tuberculous peritonitis": [
+    "01402",
+    "01405"
+  ],
+  "Tuberculosis of intestines and peritoneum": [
+    "01485"
+  ],
+  "Tuberculosis of vertebral column": [
+    "01504",
+    "01505"
+  ],
+  "Acute miliary tuberculosis": [
+    "01803",
+    "01805"
+  ],
+  "Miliary tuberculosis, unspecified": [
+    "01890",
+    "01894",
+    "01895",
+    "01896"
+  ],
+  "Other specified diphtheria": [
+    "03285",
+    "03289"
+  ],
+  "Streptococcal septicemia": [
+    "0380"
+  ],
+  "Staphylococcal septicemia, unspecified": [
+    "03810",
+    "03811",
+    "03812",
+    "03819"
+  ],
+  "Septicemia due to gram-negative organism, unspecified": [
+    "03840",
+    "03841",
+    "03842",
+    "03843",
+    "03844",
+    "03849"
+  ],
+  "Streptococcus infection in conditions classified elsewhere and of unspecified site": [
+    "04105",
+    "04109"
+  ],
+  "Staphylococcus infection in conditions classified elsewhere and of unspecified site": [
+    "04110",
+    "04119"
+  ],
+  "Methicillin susceptible Staphylococcus aureus in conditions classified elsewhere and of unspecified site": [
+    "04111"
+  ],
+  "Methicillin resistant Staphylococcus aureus in conditions classified elsewhere and of unspecified site": [
+    "04112"
+  ],
+  "Pneumococcus infection in conditions classified elsewhere and of unspecified site": [
+    "0412"
+  ],
+  "Other specified bacterial infections in conditions classified elsewhere and of unspecified site": [
+    "04183",
+    "04184",
+    "04185",
+    "04189"
+  ],
+  "Bacterial infection, unspecified, in conditions classified elsewhere and of unspecified site": [
+    "0419"
+  ],
+  "Herpes zoster with nervous system complications": [
+    "0530",
+    "05311",
+    "05312",
+    "05313",
+    "05314",
+    "05319"
+  ],
+  "Herpes zoster with dermatologic complications": [
+    "05320"
+  ],
+  "Herpes zoster with ophthalmic complications": [
+    "05329"
+  ],
+  "Herpes zoster with otitis externa": [
+    "05371"
+  ],
+  "Herpes zoster with other specified complications": [
+    "05379"
+  ],
+  "Genital herpes": [
+    "05410"
+  ],
+  "Herpetic ulceration of vulva": [
+    "05412"
+  ],
+  "Herpetic infection of penis": [
+    "05413"
+  ],
+  "Herpes simplex without mention of complication": [
+    "0549",
+    "05479"
+  ],
+  "Viral hepatitis A": [
+    "0700",
+    "0701"
+  ],
+  "Chronic viral hepatitis B": [
+    "07022",
+    "07032",
+    "07033"
+  ],
+  "Acute hepatitis C": [
+    "07041",
+    "07051"
+  ],
+  "Chronic hepatitis C": [
+    "07044",
+    "07054"
+  ],
+  "Unspecified viral hepatitis C": [
+    "07070",
+    "07071"
+  ],
+  "Other specified viral hepatitis": [
+    "07049",
+    "07059"
+  ],
+  "Other viral conjunctivitis": [
+    "0778",
+    "07799"
+  ],
+  "Viral warts": [
+    "07810",
+    "07819"
+  ],
+  "Adenovirus infection": [
+    "0790"
+  ],
+  "Rhinovirus infection": [
+    "0793"
+  ],
+  "Human papillomavirus": [
+    "0794"
+  ]
+}

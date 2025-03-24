@@ -572,3 +572,120 @@ def get_conditions_by_category(request):
     except Exception as e:
         logger.exception("Error fetching conditions by category: %s", e)
         return JsonResponse({"error": f"Failed to fetch conditions: {str(e)}"}, status=500)
+    
+# Load condition mapping from JSON file
+def load_text2dt_mapping():
+    mapping_file = "text2dt_mimic_mapping1.json"
+    if not os.path.exists(mapping_file):
+        logger.error(f"Mapping file {mapping_file} not found.")
+        return None
+    try:
+        with open(mapping_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error reading mapping file: {e}")
+        return None
+# ✅ Fetch conditions based on selected category
+@csrf_exempt
+def get_conditions_by_category_profile(request):
+    """
+    Fetches all conditions under a specific category from `text2dt_mimic_mapping1.json`,
+    returning only the English `mimic_condition` names.
+    """
+    logger.info("Received request to fetch conditions by category (profile version).")
+    
+    category = request.GET.get("category", "").strip()
+    if not category:
+        return JsonResponse({"error": "Category parameter is required."}, status=400)
+    
+    text2dt_mapping = load_text2dt_mapping()
+    if text2dt_mapping is None:
+        return JsonResponse({"error": "Mapping file not found or could not be loaded."}, status=500)
+    
+    # Filter and deduplicate conditions based on category
+    conditions = list(set(
+        entry["mapped_mimic_group"]["mimic_condition"]
+        for entry in text2dt_mapping
+        if entry.get("category") == category and "mapped_mimic_group" in entry
+    ))
+
+    if not conditions:
+        return JsonResponse({"error": f"No conditions found for category '{category}'"}, status=404)
+
+    return JsonResponse({"conditions": sorted(conditions)}, status=200)
+
+
+import json
+import os
+import logging
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from .views import generate_history  # Import existing generate_history function
+
+logger = logging.getLogger(__name__)
+
+# Function to load the MIMIC mapping JSON
+def load_text2dt_mapping():
+    mapping_file = "text2dt_mimic_mapping1.json"
+    if not os.path.exists(mapping_file):
+        logger.error(f"Mapping file {mapping_file} not found.")
+        return None
+    try:
+        with open(mapping_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error reading mapping file: {e}")
+        return None
+
+@csrf_exempt
+def generate_history_with_profile(request):
+    """
+    This function generates a structured patient history, but **only** for conditions
+    that exist in the `text2dt_mimic_mapping1.json` mapping file.
+
+    Expected JSON payload:
+    {
+        "condition": "<mimic_condition>"
+    }
+
+    Returns:
+    {
+        "history": { ... },
+        "right_condition": "<mimic_condition>"
+    }
+    """
+    logger.info("Received request to generate history with profile.")
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    condition = data.get("condition", "").strip()
+    if not condition:
+        return JsonResponse({"error": "Missing required 'condition' parameter."}, status=400)
+
+    # Load the mapping file
+    text2dt_mapping = load_text2dt_mapping()
+    if text2dt_mapping is None:
+        return JsonResponse({"error": "Mapping file not found or could not be loaded."}, status=500)
+
+    # Find the matching entry based on the condition name
+    matched_entry = next(
+        (entry for entry in text2dt_mapping if entry["mapped_mimic_group"]["mimic_condition"] == condition),
+        None
+    )
+
+    if not matched_entry:
+        logger.warning(f"Condition '{condition}' not found in mapping file.")
+        return JsonResponse({"error": f"Condition '{condition}' is not in the MIMIC mapping."}, status=404)
+
+    # Prepare a custom request to call `generate_history` with the filtered condition
+    request_body = {
+        "condition": condition  # Pass only the requested condition
+    }
+
+    # Convert it to JSON format and update the request object
+    request._body = json.dumps(request_body).encode("utf-8")  # Overwrite request body
+
+    return generate_history(request)  # Call existing function with the new request
