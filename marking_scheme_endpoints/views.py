@@ -1,10 +1,12 @@
 import json
 import os
 import re
+import uuid
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import openai
 import logging
+import time
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -15,9 +17,25 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def get_user_id(data):
+    """
+    Ensure that a valid UUID is returned.
+    If the user_id field is present and valid, return it;
+    otherwise, generate and return a new UUID.
+    """
+    user_id = data.get("user_id")
+    try:
+        if user_id:
+            return str(uuid.UUID(user_id))
+    except Exception as e:
+        logger.error("Invalid UUID provided: %s", e)
+    return str(uuid.uuid4())
+
 def save_marking_result(result_json, data):
-    response = supabase.table("history_marking_results").insert({
-        "user_id": data.get("user_id"),  # New field to store the user ID
+    # The basic history_entries table includes overall_score.
+    response = supabase.table("history_entries").insert({
+        "user_id": get_user_id(data),
         "expected_history": data.get("expected_history"),
         "user_response": data.get("user_response"),
         "conversation_logs": data.get("conversation_logs"),
@@ -28,20 +46,65 @@ def save_marking_result(result_json, data):
         "overall_score": result_json.get("overall_score"),
         "overall_feedback": result_json.get("overall_feedback"),
         "section_scores": result_json.get("section_scores"),
-        "section_feedback": result_json.get("section_feedback"),
-        "history_taking_feedback": result_json.get("history_taking_feedback"),
-        "history_taking_score": result_json.get("history_taking_score"),
-        "profile_questions": result_json.get("profile_questions"),
+        "section_feedback": result_json.get("section_feedback")
     }).execute()
-    logger.info("Supabase insert response: %s", response)
+    logger.info("Supabase insert response (history_entries): %s", response)
     return response
+
+def save_history_taking_details(feedback_json, data, overall_score):
+    """
+    Save the detailed history-taking feedback (including score, feedback, and profile questions)
+    into a separate table named history_entries_with_profiles.
+    Now also records overall_score.
+    """
+    payload = {
+        "user_id": get_user_id(data),
+        "expected_history": data.get("expected_history"),
+        "user_response": data.get("user_response"),
+        "conversation_logs": data.get("conversation_logs"),
+        "guessed_condition": data.get("guessed_condition"),
+        "right_disease": data.get("right_disease"),
+        "time_taken": data.get("time_taken"),
+        "questions_count": data.get("questions_count"),
+        "overall_score": overall_score,
+        "history_taking_feedback": feedback_json.get("feedback"),
+        "history_taking_score": feedback_json.get("score"),
+        "profile_questions": feedback_json.get("profile_questions")
+    }
+    response = supabase.table("history_entries_with_profiles").insert(payload).execute()
+    logger.info("Supabase insert response (history_entries_with_profiles): %s", response)
+    return response
+
+def profile_exists_for_condition(mimic_icd_code):
+    """
+    Checks if an associated profile exists for the given mimic ICD code.
+    Returns True if a matching record is found in the mapping file.
+    """
+    mapping_file = "text2dt_mimic_mapping_english-full-profile.json"
+    if not os.path.exists(mapping_file):
+        logger.error("Mapping file not found in profile_exists_for_condition.")
+        return False
+    try:
+        with open(mapping_file, "r", encoding="utf-8") as f:
+            text2dt_mapping = json.load(f)
+    except Exception as e:
+        logger.error("Error reading mapping file in profile_exists_for_condition: %s", e)
+        return False
+    normalized = mimic_icd_code.replace(".", "").lstrip("0")
+    matched = next(
+        (
+            record for record in text2dt_mapping
+            if normalized in [code.replace(".", "").lstrip("0") for code in record.get("mapped_mimic_group", {}).get("icd9_codes", [])]
+        ),
+        None
+    )
+    return bool(matched)
 
 @csrf_exempt
 def evaluate_history(request):
     logger.info("evaluate_history: Received a request.")
     print("evaluate_history: Received a request.")
 
-    # Log the raw request body.
     print("Incoming request body:", request.body)
     logger.debug("Incoming request body: %s", request.body)
 
@@ -52,7 +115,6 @@ def evaluate_history(request):
         logger.error("Invalid JSON received: %s", e)
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-    # Extract parameters.
     expected_history = data.get('expected_history')
     time_taken = data.get('time_taken')
     questions_count = data.get('questions_count')
@@ -60,7 +122,7 @@ def evaluate_history(request):
     conversation_logs = data.get('conversation_logs')
     guessed_condition = data.get('guessed_condition')
     right_disease = data.get('right_disease')
-    user_id = data.get('user_id')
+    # user_id is handled in get_user_id()
 
     logger.info("Extracted parameters: expected_history length=%s, time_taken=%s, questions_count=%s, user_response length=%s, conversation_logs=%s, guessed_condition=%s, right_disease=%s",
                 len(expected_history) if expected_history else 0,
@@ -71,12 +133,10 @@ def evaluate_history(request):
                 guessed_condition,
                 right_disease)
 
-    # Validate required parameters.
     if expected_history is None or time_taken is None or questions_count is None or user_response is None:
         logger.error("Missing one or more required parameters.")
         return JsonResponse({'error': 'Missing one or more required parameters.'}, status=400)
 
-    # Build the evaluation prompt.
     prompt = f"""
 You are provided with the expected patient history and a user's response.
 Expected History: {expected_history}
@@ -121,8 +181,7 @@ Make sure the JSON is valid.
 """
     logger.debug("Constructed prompt: %s", prompt)
 
-    # Set your OpenAI API key.
-    openai.api_key = os.getenv("OPENAI_API_KEY")
+    openai.api_key = os.getenv("NEXT_PUBLIC_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
     try:
         logger.info("Sending prompt to OpenAI...")
@@ -157,29 +216,41 @@ Make sure the JSON is valid.
             "section_feedback": {}
         }
 
-    # Assess history-taking if conversation_logs, guessed_condition, and right_disease exist.
-    if conversation_logs and guessed_condition and right_disease:
-        logger.info("Calling assess_history_taking for history-taking feedback...")
+    # Only trigger detailed history-taking if conversation logs, guessed condition, and right disease exist
+    # AND if an associated profile is found for the mimic condition.
+    if conversation_logs and guessed_condition and right_disease and profile_exists_for_condition(right_disease):
+        logger.info("Associated profile found for the mimic condition; calling assess_history_taking for detailed history-taking feedback...")
         history_taking_payload = {
             "conversation_logs": conversation_logs,
-            "mimic_icd_code": right_disease
+            "mimic_icd_code": right_disease,
+            "expected_history": expected_history,
+            "user_response": user_response,
+            "questions_count": questions_count,
+            "time_taken": time_taken,
+            "user_id": get_user_id(data),
+            "guessed_condition": guessed_condition,
+            "right_disease": right_disease
         }
         assess_response = assess_history_taking(history_taking_payload)
         if assess_response.status_code == 200:
             try:
                 history_taking_data = json.loads(assess_response.content)
             except Exception as e:
-                logger.error("Error parsing history-taking feedback: " + str(e))
+                logger.error("Error parsing history-taking feedback: %s", e)
                 history_taking_data = {}
-            result_json["history_taking_feedback"] = history_taking_data.get("feedback", "")
-            result_json["history_taking_score"] = history_taking_data.get("score", "0")
-            result_json["profile_questions"] = history_taking_data.get("profile_questions", [])
         else:
-            result_json["history_taking_feedback"] = "Could not retrieve history-taking feedback."
-            result_json["history_taking_score"] = "0"
-            result_json["profile_questions"] = []
+            history_taking_data = {
+                "feedback": "Could not retrieve history-taking feedback.",
+                "score": "0",
+                "profile_questions": []
+            }
+        # Save the detailed feedback in the separate table.
+        save_history_taking_details(history_taking_data, data, result_json.get("overall_score"))
+        # Merge the detailed fields into the result JSON so they are returned to the client.
+        result_json["history_taking_feedback"] = history_taking_data.get("feedback", "")
+        result_json["history_taking_score"] = history_taking_data.get("score", "0")
+        result_json["profile_questions"] = history_taking_data.get("profile_questions", [])
 
-    # Save the evaluation result in Supabase.
     try:
         save_marking_result(result_json, data)
     except Exception as e:
@@ -188,18 +259,11 @@ Make sure the JSON is valid.
     logger.info("Returning result: %s", result_json)
     return JsonResponse(result_json)
 
-
 @csrf_exempt
 def assess_history_taking(data):
-    """
-    Evaluates the user's history-taking process based on the real disease.
-    Looks up the mapped Text2DT condition, retrieves the expected question profile,
-    and compares the conversation logs to provide feedback.
-    """
     logger.info("assess_history_taking: Function activated.")
     print("assess_history_taking: Function activated.")
 
-    # Log incoming data
     logger.debug(f"Received data: {json.dumps(data, ensure_ascii=False, indent=2)}")
     print(f"Received data: {json.dumps(data, ensure_ascii=False, indent=2)}")
 
@@ -210,7 +274,7 @@ def assess_history_taking(data):
         logger.error("assess_history_taking: Missing required parameters.")
         return JsonResponse({'error': 'Missing required parameters.'}, status=400)
 
-    mapping_file = "text2dt_mimic_mapping1.json"
+    mapping_file = "text2dt_mimic_mapping_english-full-profile.json"
     if not os.path.exists(mapping_file):
         logger.error(f"assess_history_taking: Mapping file {mapping_file} not found.")
         return JsonResponse({'error': 'Mapping file not found.'}, status=500)
@@ -245,7 +309,7 @@ def assess_history_taking(data):
         return JsonResponse({'error': f'No profile available for condition {mimic_icd_code}.'}, status=404)
 
     text2dt_condition = matched_condition.get("text2dt_condition", "Unknown Condition")
-    expected_profile = matched_condition.get("profile", [])
+    expected_profile = matched_condition.get("english_profile", [])
     logger.info(f"Found profile for condition '{text2dt_condition}'.")
     print(f"Found profile for condition '{text2dt_condition}'.")
 
@@ -257,6 +321,7 @@ Conversation Logs:
 
 The expected structured questioning profile for this condition '{text2dt_condition}' is:
 {json.dumps(expected_profile, indent=2)}
+Note: The provided profile includes logical decision nodes (denoted by "D node:") that encapsulate additional decision-making logic. Please incorporate these details into your evaluation to provide more comprehensive feedback.
 
 Please translate the above profile questions from Chinese to English, and ensure that the detailed feedback you provide is entirely in English (do not include any Chinese).
 Then, compare the user's conversation logs to the translated profile and provide detailed feedback on the history-taking performance.
@@ -272,7 +337,7 @@ Ensure the JSON is valid and contains no additional text.
 """
     logger.debug(f"Constructed AI prompt:\n{prompt}")
 
-    openai.api_key = os.getenv("OPENAI_API_KEY")
+    openai.api_key = os.getenv("NEXT_PUBLIC_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
     try:
         logger.info("Sending prompt to OpenAI for evaluation...")
@@ -292,16 +357,8 @@ Ensure the JSON is valid and contains no additional text.
     logger.info("Returning feedback response from assess_history_taking.")
     return JsonResponse(feedback_json)
 
-# ------------------------------
-# New Endpoint: generate_tree
-# ------------------------------
 @csrf_exempt
 def generate_tree(request):
-    """
-    This endpoint checks for a local JSON file (decision_tree.json) containing a decision tree.
-    If found, it returns the stored tree. Otherwise, it calls OpenAI to generate a decision tree,
-    which should include one example condition mapped to a mimic ICD code showing the perfect navigation of its logic question tree.
-    """
     tree_file = "decision_tree.json"
     
     if os.path.exists(tree_file):
@@ -314,14 +371,13 @@ def generate_tree(request):
             logger.error("Error reading decision tree file: %s", e)
             return JsonResponse({'error': 'Error reading decision tree file.'}, status=500)
     else:
-        # If the file does not exist, generate a decision tree via OpenAI.
         prompt = (
             "Generate a decision tree for clinical history taking for a condition. "
             "The decision tree should include at least one example condition with a corresponding MIMIC ICD code. "
             "Show the perfect navigation of its logic question tree. "
             "Return the tree in valid JSON format with keys for each decision node."
         )
-        openai.api_key = os.getenv("OPENAI_API_KEY")
+        openai.api_key = os.getenv("NEXT_PUBLIC_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
         try:
             logger.info("No decision tree file found. Requesting tree generation from OpenAI...")
             response = openai.ChatCompletion.create(
@@ -332,7 +388,6 @@ def generate_tree(request):
             )
             tree_message = response.choices[0].message['content']
             decision_tree = json.loads(tree_message)
-            # Save the generated decision tree to a file for future use.
             with open(tree_file, "w") as f:
                 json.dump(decision_tree, f, indent=4)
             return JsonResponse(decision_tree)
@@ -340,21 +395,8 @@ def generate_tree(request):
             logger.error("Error generating decision tree: %s", e)
             return JsonResponse({'error': 'Error generating decision tree.'}, status=500)
 
-
-# ------------------------------
-# New Endpoint: mark_conversation on decision tree
-# ------------------------------
 @csrf_exempt
 def mark_conversation(request):
-    """
-    This endpoint receives the guessed disease, the right disease, conversation logs, and a decision tree (either generated or from the database).
-    It then evaluates where the user went wrong in their history taking according to the decision tree and provides feedback.
-    Expected JSON keys in the request body:
-      - guessed_disease
-      - right_disease
-      - conversation_logs
-      - decision_tree
-    """
     logger.info("mark_conversation: Received a request.")
     try:
         data = json.loads(request.body)
@@ -372,7 +414,6 @@ def mark_conversation(request):
         logger.error("mark_conversation: Missing one or more required parameters.")
         return JsonResponse({'error': 'Missing one or more required parameters.'}, status=400)
     
-    # Build prompt for evaluation of conversation based on decision tree
     prompt = (
         f"Using the following decision tree:\n{json.dumps(decision_tree, indent=2)}\n\n"
         f"Evaluate the following conversation logs in which the user navigated a clinical history taking session. "
@@ -382,7 +423,7 @@ def mark_conversation(request):
         "Return the feedback in valid JSON format with at least the key 'feedback'."
     )
     
-    openai.api_key = os.getenv("OPENAI_API_KEY")
+    openai.api_key = os.getenv("NEXT_PUBLIC_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     try:
         logger.info("mark_conversation: Sending prompt to OpenAI for feedback generation...")
         response = openai.ChatCompletion.create(
@@ -401,21 +442,6 @@ def mark_conversation(request):
 
 @csrf_exempt
 def compare_answer(request):
-    """
-    New route that accepts a question, the expected (perfect) answer, and the user's answer.
-    It compares the user's answer to the expected answer and returns a percentage score and very in-depth feedback.
-    Expects a JSON payload:
-    {
-      "question": "<question text>",
-      "expected_answer": "<perfect answer>",
-      "user_answer": "<user's answer>"
-    }
-    Returns a JSON object:
-    {
-      "score": "<percentage score>",
-      "feedback": "<very in-depth feedback>"
-    }
-    """
     logger.info("Received request to compare answer.")
     try:
         data = json.loads(request.body)
@@ -430,7 +456,6 @@ def compare_answer(request):
         logger.error("Missing required parameters in compare_answer.")
         return JsonResponse({"error": "Missing required parameters."}, status=400)
     
-    # Updated prompt with instructions for very in-depth feedback.
     prompt = f"""
 Compare the user's answer to the perfect answer for the following question:
 Question: {question}
@@ -451,7 +476,7 @@ Return ONLY a JSON object exactly in this format:
 Ensure the JSON is valid.
 """
     logger.debug("Constructed prompt for compare_answer: %s", prompt)
-    openai.api_key = os.getenv("OPENAI_API_KEY")
+    openai.api_key = os.getenv("NEXT_PUBLIC_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     
     try:
         logger.info("Sending prompt to OpenAI for compare_answer...")
@@ -489,8 +514,6 @@ Ensure the JSON is valid.
     
     logger.info("Returning compare_answer result: %s", result_json)
     return JsonResponse(result_json)
-
-
 @csrf_exempt
 def example_endpoint(request):
     return JsonResponse({'message': 'Hello from the new API!'})

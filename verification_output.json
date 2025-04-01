@@ -1,0 +1,14 @@
+{
+  "mimic_condition": "Uric acid nephrolithiasis",
+  "icd9_codes": [
+    "592.0"
+  ],
+  "condition_details": [],
+  "text2dt_condition": "输尿管结石患者",
+  "text2dt_profile": [
+    "Does the patient have 纯尿酸结石 (临床表现)?",
+    "Does the patient have 含有尿酸铵的结石 (临床表现)?",
+    "Does the patient have 含有尿酸钠的结石 (临床表现)?"
+  ],
+  "verification": "The English group name \"Uric acid nephrolithiasis\" is an accurate and appropriate translation for the Chinese Text2DT condition \"输尿管结石患者\". \n\nExplanation: \n- \"Uric acid\" corresponds to \"尿酸\" in Chinese, which is mentioned in the Text2DT condition.\n- \"Nephrolithiasis\" refers to the presence of kidney stones, which is represented by \"结石\" in Chinese.\n- The condition \"输尿管结石患者\" specifically mentions urinary stones in the ureter, which aligns with the term \"nephrolithiasis\" in the English group name.\n\nTherefore, the translation \"Uric acid nephrolithiasis\" accurately captures the essence of the Chinese Text2DT condition. \n\nCorrect"
+}

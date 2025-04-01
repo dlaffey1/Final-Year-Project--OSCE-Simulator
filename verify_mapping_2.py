@@ -8,7 +8,7 @@ from difflib import get_close_matches
 from google.cloud import bigquery
 
 # Configuration file names and paths
-TEXT2DT_MAPPING_FILE = "text2dt_mimic_mapping1.json"  # New mapping file with mapped Text2DT records
+TEXT2DT_MAPPING_FILE = "text2dt_mimic_mapping_english.json"  # New mapping file with mapped Text2DT records
 VERIFICATION_OUTPUT_FILE = "verification_output.json"  # Output file for verification results
 
 # Set up logging

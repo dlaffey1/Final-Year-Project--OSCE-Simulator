@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 # Configuration file names and paths
 TEXT2DT_FILE = "Text2DT_train.json"                # Your Text2DT training file
-OUTPUT_MAPPING_FILE = "text2dt_mimic_mapping_english.json" # Output file for Text2DT records with mimic mappings
+OUTPUT_MAPPING_FILE = "text2dt_mimic_mapping_english-full-profile.json"  # Output file for Text2DT records with mimic mappings
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -43,18 +43,21 @@ def similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
 def translate_to_english(chinese_text):
-    """Translate Chinese text to English using ChatGPT."""
-    prompt = f"Translate the following Chinese medical condition into English: '{chinese_text}'"
+    """
+    Translate Chinese text to English using ChatGPT.
+    The prompt instructs the model to preserve all details and avoid truncation.
+    """
+    prompt = f"Translate the following Chinese text into English. Please preserve every detail and do not truncate any part of the text: '{chinese_text}'"
     logger.info(f"Translating to English: {chinese_text}")
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a medical translation assistant."},
+                {"role": "system", "content": "You are a medical translation assistant. Ensure that you preserve all details without truncation."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
-            max_tokens=60,
+            max_tokens=300,
         )
         translation = response["choices"][0]["message"]["content"].strip()
         logger.info(f"Translation result: {translation}")
@@ -156,39 +159,65 @@ Respond strictly in JSON format as follows:
         logger.error(f"Error obtaining category for '{text2dt_condition}': {e}")
         return "other"
 
+def build_full_profile(tree):
+    """
+    Build a full profile list from the complete decision tree.
+    Each node is converted into a human-readable string based on its role.
+    This captures the entire decision-making logic.
+    """
+    profile_list = []
+    for node in tree:
+        role = node.get("role", "").upper()
+        if role == "ROOT":
+            description = node.get("description", "No description")
+            profile_list.append(f"Start: {description}")
+        elif role == "C":
+            # Process condition nodes with triples.
+            triples = node.get("triples", [])
+            for triple in triples:
+                subject, relation, obj = triple
+                profile_list.append(f"Does the patient have {obj} ({relation})?")
+        elif role == "Q":
+            question = node.get("question", "No question provided")
+            profile_list.append(f"Question: {question}")
+        elif role == "R":
+            result = node.get("result", "No result provided")
+            profile_list.append(f"Decision: {result}")
+        else:
+            # For any other node types, include a generic representation.
+            profile_list.append(f"{role} node: {json.dumps(node, ensure_ascii=False)}")
+    return profile_list
+
 def process_text2dt_record(record):
     """
     Process a single Text2DT record: extract the condition (substring before '@'),
-    build the decision tree profile, ask for the best Mimic-III condition and assign a category.
-    Additionally, translate each profile question to English and store them in 'english_profile'.
+    build the decision tree profile using the entire tree, ask for the best Mimic-III condition,
+    and assign a category.
+    Additionally, translate each full profile string to English and store them in 'english_profile'.
     """
     text = record.get("text", "")
     logger.info(f"Processing Text2DT record with text (first 30 chars): {text[:30]}...")
     condition_name = text.split("@")[0].strip() if "@" in text else text.strip()
     logger.info(f"Extracted condition name: {condition_name}")
     
-    # Build profile from the decision tree (only include nodes with role "C")
-    profile = []
+    # Build full profile from the entire decision tree.
     tree = record.get("tree", [])
     if not tree:
         logger.info(f"No decision tree found for condition '{condition_name}'.")
-    for node in tree:
-        if node.get("role") == "C":
-            for triple in node.get("triples", []):
-                subject, relation, obj = triple
-                question = f"Does the patient have {obj} ({relation})?"
-                profile.append(question)
-    logger.info(f"Built profile for condition '{condition_name}': {profile}")
+        profile = []
+    else:
+        profile = build_full_profile(tree)
+    logger.info(f"Built full profile for condition '{condition_name}': {profile}")
     
-    # Create english_profile by translating each profile question
-    english_profile = [translate_to_english(question) for question in profile]
+    # Create english_profile by translating each profile string.
+    english_profile = [translate_to_english(item) for item in profile]
     logger.info(f"Built english_profile for condition '{condition_name}': {english_profile}")
     
-    # Ask the AI for the best matching Mimic-III condition
+    # Ask the AI for the best matching Mimic-III condition.
     mimic_condition, icd9_codes = get_best_mimic_condition(condition_name, profile)
     logger.info(f"AI assigned mimic condition for '{condition_name}': {mimic_condition} with codes: {icd9_codes}")
     
-    # Ask the AI for a category assignment
+    # Ask the AI for a category assignment.
     category = get_category(condition_name, profile)
     logger.info(f"AI assigned category for '{condition_name}': {category}")
     
@@ -218,7 +247,7 @@ def process_all_text2dt_records():
         except Exception as e:
             logger.error(f"Error processing a Text2DT record: {e}")
         
-        # Update output file every 10 records
+        # Update output file every 10 records.
         if (idx + 1) % 10 == 0:
             try:
                 with open(OUTPUT_MAPPING_FILE, "w", encoding="utf-8") as f:
@@ -228,7 +257,7 @@ def process_all_text2dt_records():
                 logger.error(f"Error updating output mapping file: {e}")
             time.sleep(1)
     
-    # Final update after processing all records
+    # Final update after processing all records.
     try:
         with open(OUTPUT_MAPPING_FILE, "w", encoding="utf-8") as f:
             json.dump(processed, f, ensure_ascii=False, indent=2)
