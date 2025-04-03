@@ -9,6 +9,15 @@ import logging
 import time
 from dotenv import load_dotenv
 load_dotenv()
+import hashlib
+def generate_user_uuid(email: str) -> str:
+    """
+    Generate a consistent UUID based on the provided email address.
+    Uses MD5 hashing to produce a consistent UUID.
+    """
+    email_normalized = email.lower().strip()
+    hash_digest = hashlib.md5(email_normalized.encode("utf-8")).hexdigest()
+    return str(uuid.UUID(hash_digest))
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -21,15 +30,19 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 def get_user_id(data):
     """
     Ensure that a valid UUID is returned.
-    If the user_id field is present and valid, return it;
-    otherwise, generate and return a new UUID.
+    - If the user_id field is provided and valid, return it.
+    - Otherwise, if an email is provided, generate a consistent UUID from it.
+    - If neither is provided, generate a new random UUID.
     """
     user_id = data.get("user_id")
-    try:
-        if user_id:
+    if user_id:
+        try:
             return str(uuid.UUID(user_id))
-    except Exception as e:
-        logger.error("Invalid UUID provided: %s", e)
+        except Exception as e:
+            logger.error("Invalid UUID provided: %s", e)
+    email = data.get("email")
+    if email:
+        return generate_user_uuid(email)
     return str(uuid.uuid4())
 
 def save_marking_result(result_json, data):
