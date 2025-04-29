@@ -59,7 +59,8 @@ def save_marking_result(result_json, data):
         "overall_score": result_json.get("overall_score"),
         "overall_feedback": result_json.get("overall_feedback"),
         "section_scores": result_json.get("section_scores"),
-        "section_feedback": result_json.get("section_feedback")
+        "section_feedback": result_json.get("section_feedback"),
+        "category": data.get("category")
     }).execute()
     logger.info("Supabase insert response (history_entries): %s", response)
     return response
@@ -82,7 +83,8 @@ def save_history_taking_details(feedback_json, data, overall_score):
         "overall_score": overall_score,
         "history_taking_feedback": feedback_json.get("feedback"),
         "history_taking_score": feedback_json.get("score"),
-        "profile_questions": feedback_json.get("profile_questions")
+        "profile_questions": feedback_json.get("profile_questions"),
+        "category": data.get("category")
     }
     response = supabase.table("history_entries_with_profiles").insert(payload).execute()
     logger.info("Supabase insert response (history_entries_with_profiles): %s", response)

@@ -71,26 +71,23 @@ def get_subject_id_by_condition(condition_icd):
 @csrf_exempt
 def generate_history_with_profile(request):
     """
-    This function generates a structured patient history, but **only** for conditions
-    that exist in the `text2dt_mimic_mapping_english-full-profile.json` mapping file.
+    Generates a structured patient history for a condition that exists in the
+    `text2dt_mimic_mapping_english-full-profile.json` mapping file.
 
-    If no condition is provided or if the optional "random" parameter is true,
-    a random condition from the mapping file is used.
+    The `category` is dynamically extracted from the chosen mapping entry.
 
-    Additionally, if the provided condition is a word (non-numeric), it is translated
-    using the mimic-to-ICD conversion logic.
-    
     Expected JSON payload (optional):
     {
-        "condition": "<mimic_condition_or_icd9_code>",  // Optional; if omitted, a random condition is chosen.
-        "random": true                                  // Optional; if true, always choose a random condition.
+        "condition": "<mimic_condition_or_icd9_code>",
+        "random": true
     }
 
     Returns:
     {
         "history": { ... },
         "right_condition": "<mimic_icd_code>",
-        "profile": true
+        "profile": true,
+        "category": "<category>"
     }
     """
     logger.info("Received request to generate history with profile.")
@@ -100,12 +97,10 @@ def generate_history_with_profile(request):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
-    # Load mapping file.
     mapping_data = load_text2dt_mapping()
     if mapping_data is None:
         return JsonResponse({"error": "Mapping file not found or could not be loaded."}, status=500)
 
-    # Function to extract ICD code from an entry.
     def extract_icd_code(entry):
         group = entry.get("mapped_mimic_group", {})
         icd_codes = group.get("icd9_codes")
@@ -113,71 +108,84 @@ def generate_history_with_profile(request):
             return icd_codes[0]
         return group.get("mimic_condition_number", group.get("mimic_condition", "Unknown"))
 
-    # Determine condition ICD code.
+    chosen_entry = None
+    condition_icd = None
+    category = "other"
+
+    # Random selection mode
     if data.get("random", False):
-        random_entry = random.choice(mapping_data)
-        condition_icd = extract_icd_code(random_entry)
-        logger.info(f"Random flag is true. Selected random condition ICD code: {condition_icd}")
+        chosen_entry = random.choice(mapping_data)
+        condition_icd = extract_icd_code(chosen_entry)
+        logger.info(f"Random condition selected: ICD = {condition_icd}")
+    
+    # Specific condition mode
     else:
-        # Cast the condition to a string and remove whitespace.
         condition = str(data.get("condition", "")).strip()
         if not condition:
-            random_entry = random.choice(mapping_data)
-            condition_icd = extract_icd_code(random_entry)
-            logger.info(f"No condition provided. Selected random condition ICD code: {condition_icd}")
+            chosen_entry = random.choice(mapping_data)
+            condition_icd = extract_icd_code(chosen_entry)
+            logger.info(f"No condition provided. Randomly selected ICD: {condition_icd}")
+        elif condition.replace(".", "", 1).isdigit():
+            condition_icd = condition
+            chosen_entry = next(
+                (entry for entry in mapping_data
+                 if condition_icd in [code.replace(".", "").lstrip("0") for code in entry.get("mapped_mimic_group", {}).get("icd9_codes", [])]),
+                None
+            )
+            logger.info(f"Numeric condition received. Matched entry: {bool(chosen_entry)}")
         else:
-            # Check if the provided condition is numeric (allowing one decimal point).
-            if condition.replace(".", "", 1).isdigit():
-                # Condition is numeric; use it as is.
-                condition_icd = condition
-                logger.info(f"Provided condition is numeric. Using ICD code: {condition_icd}")
-            else:
-                # Condition is a word: translate using conversion logic.
-                matched_entry = next(
-                    (entry for entry in mapping_data 
-                     if entry.get("mapped_mimic_group", {}).get("mimic_condition") == condition),
-                    None
-                )
-                if not matched_entry:
-                    logger.warning(f"Condition '{condition}' not found in mapping file.")
-                    return JsonResponse({"error": f"Condition '{condition}' is not in the MIMIC mapping."}, status=404)
-                icd_codes = matched_entry.get("mapped_mimic_group", {}).get("icd9_codes", [])
-                if not icd_codes:
-                    logger.warning(f"No ICD code found for condition '{condition}'.")
-                    return JsonResponse({"error": f"No ICD code found for condition '{condition}'."}, status=404)
-                condition_icd = icd_codes[0]
-                logger.info(f"Converted condition '{condition}' to ICD code: {condition_icd}")
+            # Word-based condition matching
+            chosen_entry = next(
+                (entry for entry in mapping_data
+                 if entry.get("mapped_mimic_group", {}).get("mimic_condition") == condition),
+                None
+            )
+            if not chosen_entry:
+                logger.warning(f"Condition '{condition}' not found in mapping.")
+                return JsonResponse({"error": f"Condition '{condition}' is not in the mapping."}, status=404)
+            icd_codes = chosen_entry.get("mapped_mimic_group", {}).get("icd9_codes", [])
+            if not icd_codes:
+                return JsonResponse({"error": f"No ICD code found for condition '{condition}'."}, status=404)
+            condition_icd = icd_codes[0]
+            logger.info(f"Condition '{condition}' resolved to ICD: {condition_icd}")
 
-    # Automatically determine a subject_id from BigQuery based on the condition.
+    if not chosen_entry:
+        return JsonResponse({"error": f"No matching entry found for condition '{condition_icd}'."}, status=404)
+
+    # Extract category from the chosen profile-mapped entry
+    category = chosen_entry.get("category", "other")
+    logger.info(f"Extracted category: {category}")
+
+    # Fetch a subject ID from BigQuery using the ICD code
     subject_id = get_subject_id_by_condition(condition_icd)
     if subject_id is None:
         return JsonResponse({"error": f"No patient found with condition ICD code {condition_icd}."}, status=404)
 
-    # Prepare a new request body with the selected condition ICD code and subject_id.
+    # Build request for /generate-history/
     new_request_body = {
         "condition": condition_icd,
-        "subject_id": subject_id
+        "subject_id": subject_id,
+        "category": category  # Pass category along
     }
-    # Overwrite the original request body.
+
     request._body = json.dumps(new_request_body).encode("utf-8")
-    
-    # Call generate_history to generate the history.
+
+    # Call downstream generator
     response = generate_history(request)
-    
+
     try:
         response_data = json.loads(response.content)
     except Exception as e:
-        logger.error("Error parsing response from generate_history: " + str(e))
+        logger.error("Error parsing response from generate_history: %s", e)
         return JsonResponse({"error": "Internal server error"}, status=500)
 
-    # Override the generated history prompt by inserting the requested condition ICD code.
-    if "history" in response_data:
-        response_data["right_condition"] = condition_icd
-    else:
-        response_data = {"history": {}, "right_condition": condition_icd}
+    response_data["right_condition"] = condition_icd
+    response_data["profile"] = True
+    response_data["category"] = category
 
-    response_data["profile"] = True  # Indicates that a profile was requested.
     return JsonResponse(response_data)
+
+
 
 
 @csrf_exempt
@@ -224,79 +232,193 @@ def convert_mimic_to_icd(request):
     icd_code = icd_codes[0]
     logger.info(f"Found ICD code for condition '{condition}': {icd_code}")
     return JsonResponse({"icd_code": icd_code}, status=200)
+
 @csrf_exempt
 def generate_history(request):
     logger.info("Received request to generate history.")
+
     if request.method == "GET":
-        logger.info("GET request received - rendering form.")
         return render(request, "history/index.html")
-    
-    if request.method == "POST":
-        logger.info("POST request received - processing data.")
-        try:
-            data = json.loads(request.body)
-        except json.JSONDecodeError as e:
-            logger.error("Invalid JSON: %s", e)
-            return JsonResponse({"error": "Invalid JSON"}, status=400)
-        
-        # If subject_id is missing, automatically look it up.
-        subject_id = data.get("subject_id")
-        if subject_id is None:
-            # If no condition is provided, default to random selection.
-            condition = data.get("condition")
-            if not condition:
-                logger.info("No condition provided; setting random flag to true.")
-                data["random"] = True
-                # In this case, we let the generate_history_with_profile (or fallback logic) pick a random condition.
-                # For now, we'll use an empty condition so that the random branch is triggered.
-                condition = ""
-                data["condition"] = condition
-            else:
-                # If condition is non-numeric, try to convert it using the BigQuery mimic database.
+
+    if request.method != "POST":
+        return JsonResponse({"error": "Invalid request method"}, status=400)
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError as e:
+        logger.error("Invalid JSON: %s", e)
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    try:
+        client = bigquery.Client()
+    except Exception as e:
+        logger.error("Failed to initialize BigQuery client: %s", e)
+        return JsonResponse({"error": "BigQuery connection failed"}, status=500)
+
+    fallback_condition_name = None
+    try:
+        if data.get("random"):
+            condition, subject_id, condition_name = select_random_condition_and_subject(client)
+            if not condition or not subject_id:
+                return JsonResponse({"error": "Failed to select random condition or subject"}, status=500)
+            data["condition"] = condition
+            data["subject_id"] = subject_id
+            fallback_condition_name = condition_name
+        else:
+            subject_id = data.get("subject_id")
+            condition = data.get("condition", "").strip()
+
+            if not subject_id:
+                if not condition:
+                    return JsonResponse({"error": "Condition or subject_id is required"}, status=400)
                 if not condition.replace(".", "", 1).isdigit():
-                    condition_converted = convert_condition_by_bigquery(condition)
-                    if not condition_converted:
-                        logger.warning(f"Condition '{condition}' not found via BigQuery conversion.")
+                    condition = convert_condition_by_bigquery(condition)
+                    if not condition:
                         return JsonResponse({"error": f"Condition '{condition}' not found in mimic database."}, status=404)
-                    condition = condition_converted
-                    logger.info(f"Converted condition via BigQuery to ICD code: {condition}")
-                # Look up subject_id using the condition ICD code.
                 subject_id = get_subject_id_by_condition(condition)
-                if subject_id is None:
+                if not subject_id:
                     return JsonResponse({"error": f"No patient found with condition ICD code {condition}."}, status=404)
                 data["condition"] = condition
-            data["subject_id"] = subject_id
-        logger.info("Using subject_id from request: %s", subject_id)
-        
+                data["subject_id"] = subject_id
+
+        subject_id = data["subject_id"]
+        condition = data["condition"]
+        logger.info(f"Final condition: {condition}, subject_id: {subject_id}")
+
+        (patient, diagnoses, admissions, notes, lab_tests, prescriptions, icu_stays, transfers, procedures, services, microbiology) = fetch_patient_data(client, subject_id=subject_id)
+        if not patient:
+            return JsonResponse({"error": "No patient data found"}, status=404)
+
+        save_raw_mimic_data(subject_id, patient, admissions, diagnoses, procedures, icu_stays, transfers, services, lab_tests, prescriptions, microbiology, notes)
+
+        prompt = build_prompt(subject_id, patient, admissions, diagnoses, procedures, icu_stays, transfers, services, lab_tests, prescriptions, microbiology, notes)
+        gpt_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a medical assistant providing structured patient histories. Use all the provided raw MIMIC-III data to create a detailed and coherent summary."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=800,
+            temperature=0.7,
+        )
+        history_str = gpt_response["choices"][0]["message"]["content"].strip()
+
+        # === SAFER HISTORY PARSING ===
         try:
-            logger.info("Initializing BigQuery client...")
-            client = bigquery.Client()
-            logger.info("BigQuery client initialized successfully.")
+            history_data = json.loads(history_str)
+        except json.JSONDecodeError:
+            logger.warning("Initial JSON parse failed. Attempting to extract embedded JSON.")
+            match = re.search(r'```json\s*(\{.*\})\s*```', history_str, re.DOTALL)
+            if match:
+                try:
+                    history_data = json.loads(match.group(1))
+                    logger.info("Successfully parsed nested JSON from GPT response.")
+                except json.JSONDecodeError:
+                    logger.error("Nested JSON still invalid. Returning fallback history.")
+                    history_data = {
+                        "PC": history_str,
+                        "HPC": "", "PMHx": "", "DHx": "", "FHx": "", "SHx": "", "SR": ""
+                    }
+            else:
+                logger.warning("No JSON block found in GPT response. Storing full as PC.")
+                history_data = {
+                    "PC": history_str,
+                    "HPC": "", "PMHx": "", "DHx": "", "FHx": "", "SHx": "", "SR": ""
+                }
+
+        # Extract right_condition and fallback to condition_name if needed
+        right_condition = extract_right_condition(diagnoses, fallback_condition_name)
+
+        # Try infer category if not given
+        category = data.get("category")
+        if not category or category.lower() == "other":
+            icd_code = None
+            for diag in diagnoses:
+                if diag.get("icd_code"):
+                    icd_code = diag["icd_code"]
+                    break
+            if icd_code:
+                logger.info(f"Attempting to infer category from ICD code: {icd_code}")
+                category = get_category_from_icd(client, icd_code)
+            else:
+                logger.warning("No usable ICD code found to derive category.")
+            category = category or "Other"
+
+        return JsonResponse({
+            "history": history_data,
+            "right_condition": right_condition,
+            "category": category
+        })
+
+    except Exception as e:
+        logger.exception("Unexpected error in generate_history: %s", e)
+        return JsonResponse({"error": f"Unexpected error: {str(e)}"}, status=500)
+
+# ========== HELPER FUNCTIONS ==========
+def select_random_condition_and_subject(client, max_retries=5):
+    logger.info("Selecting random ICD code with matching subject_id...")
+
+    for attempt in range(max_retries):
+        logger.debug(f"Attempt #{attempt + 1} to fetch random ICD and subject")
+
+        query = """
+            SELECT DISTINCT d.ICD9_CODE AS icd_code, dd.LONG_TITLE AS long_title
+            FROM `fyp-project-451413.mimic_iii_local.DIAGNOSES_ICD` d
+            JOIN `fyp-project-451413.mimic_iii_local.D_ICD_DIAGNOSES` dd
+              ON d.ICD9_CODE = dd.ICD9_CODE
+            ORDER BY RAND()
+            LIMIT 1
+        """
+
+        try:
+            results = client.query(query).result()
+            row = list(results)[0]
+            icd_code = row.icd_code
+            condition_name = row.long_title
+            logger.info(f"Random ICD: {icd_code} ({condition_name})")
+
+            subject_id = get_subject_id_by_condition(icd_code)
+            if subject_id:
+                logger.info(f"Found matching subject_id: {subject_id}")
+                return icd_code, subject_id, condition_name
+            else:
+                logger.warning(f"No subject_id found for ICD code: {icd_code}")
         except Exception as e:
-            logger.error("Failed to initialize BigQuery client: %s", e)
-            return JsonResponse({"error": "BigQuery connection failed"}, status=500)
-        
-        try:
-            logger.info("Fetching patient data from BigQuery for subject_id: %s", subject_id)
-            (patient,
-             diagnoses,
-             admissions,
-             notes,
-             lab_tests,
-             prescriptions,
-             icu_stays,
-             transfers,
-             procedures,
-             services,
-             microbiology) = fetch_patient_data(client, subject_id=subject_id)
-            
-            if not patient:
-                logger.warning("No patient data found for subject_id %s.", subject_id)
-                return JsonResponse({"error": "No patient data found"}, status=404)
-            logger.info(f"Patient data found: {patient}")
-            
-            mimic_data_file = os.path.join(MIMIC_DATA_BASE, f"mimic_data_{subject_id}.json")
-            raw_mimic_data = {
+            logger.error(f"BigQuery error on attempt #{attempt + 1}: {e}")
+
+    logger.error("Exhausted attempts to select random condition and subject.")
+    return None, None, None
+
+
+
+def extract_right_condition(diagnoses, fallback_condition_name=None):
+    if diagnoses and isinstance(diagnoses, list):
+        for diag in diagnoses:
+            if diag.get("description"):
+                return diag["description"]
+            if diag.get("icd_code"):
+                return diag["icd_code"]
+    if fallback_condition_name:
+        return fallback_condition_name
+    return "Unknown"
+
+
+def infer_category_from_diagnoses(client, diagnoses):
+    for diag in diagnoses:
+        icd = diag.get("icd_code")
+        if icd:
+            try:
+                return get_category_from_icd(client, icd)
+            except Exception as e:
+                logger.warning("Failed to derive category from ICD: %s", e)
+    return None
+
+
+def save_raw_mimic_data(subject_id, patient, admissions, diagnoses, procedures, icu_stays, transfers, services, lab_tests, prescriptions, microbiology, notes):
+    try:
+        mimic_data_file = os.path.join(MIMIC_DATA_BASE, f"mimic_data_{subject_id}.json")
+        with open(mimic_data_file, "w") as f:
+            json.dump({
                 "patient": patient,
                 "admissions": admissions,
                 "diagnoses": diagnoses,
@@ -308,18 +430,13 @@ def generate_history(request):
                 "prescriptions": prescriptions,
                 "microbiology": microbiology,
                 "notes": notes,
-            }
-            try:
-                with open(mimic_data_file, "w") as f:
-                    json.dump(raw_mimic_data, f)
-                    f.flush()
-                    os.fsync(f.fileno())
-                logger.info(f"Saved raw MIMIC data to file: {mimic_data_file}")
-            except Exception as e:
-                logger.error("Failed to save raw MIMIC data: %s", e)
-            
-            logger.info("Generating patient history using ChatGPT (JSON format)...")
-            prompt = f"""
+            }, f, indent=2)
+        logger.info(f"Saved raw MIMIC data to {mimic_data_file}")
+    except Exception as e:
+        logger.error(f"Failed to save MIMIC data: {e}")
+
+def build_prompt(subject_id, patient, admissions, diagnoses, procedures, icu_stays, transfers, services, lab_tests, prescriptions, microbiology, notes):
+    return f"""
 You are provided with detailed MIMIC-III patient data (subject_id={subject_id}). Please analyze the data below and generate a structured patient history with the following headings:
 1) Presenting complaint (PC)
 2) History of presenting complaint (HPC)
@@ -377,50 +494,7 @@ Return the entire result as valid JSON with exactly these fields:
 
 Ensure that even if a section is empty, the field is present.
 """
-            logger.debug("Constructed prompt for generate_history: %s", prompt)
-            gpt_response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a medical assistant providing structured patient histories. Use all the provided raw MIMIC-III data to create a detailed and coherent summary."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=800,
-                temperature=0.7,
-            )
-            history_json_str = gpt_response["choices"][0]["message"]["content"].strip()
-            logger.info(f"ChatGPT raw response (generate_history): {history_json_str}")
-            try:
-                history_data = json.loads(history_json_str)
-            except json.JSONDecodeError:
-                logger.warning("GPT returned invalid JSON; storing entire response in 'PC' only.")
-                history_data = {
-                    "PC": history_json_str,
-                    "HPC": "",
-                    "PMHx": "",
-                    "DHx": "",
-                    "FHx": "",
-                    "SHx": "",
-                    "SR": ""
-                }
-            logger.info(f"Final structured history: {history_data}")
-            if diagnoses and isinstance(diagnoses, list) and len(diagnoses) > 0:
-                first_diag = diagnoses[0]
-                if first_diag.get("description"):
-                    right_condition = first_diag["description"]
-                elif first_diag.get("icd_code"):
-                    right_condition = first_diag["icd_code"]
-                else:
-                    right_condition = "Unknown"
-            else:
-                right_condition = "Unknown"
-            logger.info(f"Extracted right condition: {right_condition}")
-            return JsonResponse({"history": history_data, "right_condition": right_condition}, status=200)
-        except Exception as e:
-            logger.exception("An error occurred while processing the request: %s", e)
-            return JsonResponse({"error": f"An unexpected error occurred: {str(e)}"}, status=500)
-    
-    logger.warning("Invalid request method.")
-    return JsonResponse({"error": "Invalid request method"}, status=400)
+
 
 @csrf_exempt
 def generate_questions(request):
@@ -920,3 +994,52 @@ def convert_condition_by_bigquery(condition):
     except Exception as e:
         logger.error("Error converting condition via BigQuery: %s", e)
         return None
+
+
+def get_category_from_icd(client, icd_code: str) -> str:
+    try:
+        icd_code_clean = icd_code.replace(".", "").lstrip("0")
+        logger.info(f"Looking up category for ICD: {icd_code} → normalized to {icd_code_clean}")
+
+        query = """
+        SELECT
+        CASE
+            WHEN icd9_code LIKE 'V%' THEN 'Supplementary Conditions'
+            WHEN icd9_code LIKE 'E%' THEN 'External Causes'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 1 AND 139 THEN 'Infectious & Parasitic Diseases'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 140 AND 239 THEN 'Neoplasms'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 240 AND 279 THEN 'Endocrine & Metabolic'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 280 AND 289 THEN 'Blood Disorders'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 290 AND 319 THEN 'Mental Disorders'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 320 AND 389 THEN 'Nervous System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 390 AND 459 THEN 'Circulatory System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 460 AND 519 THEN 'Respiratory System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 520 AND 579 THEN 'Digestive System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 580 AND 629 THEN 'Genitourinary System'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 630 AND 679 THEN 'Pregnancy/Childbirth'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 680 AND 709 THEN 'Skin Disorders'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 710 AND 739 THEN 'Musculoskeletal'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 740 AND 759 THEN 'Congenital Anomalies'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 760 AND 779 THEN 'Perinatal Conditions'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 780 AND 799 THEN 'Symptoms & Ill-defined Conditions'
+            WHEN SAFE_CAST(SUBSTR(icd9_code, 1, 3) AS INT64) BETWEEN 800 AND 999 THEN 'Injury & Poisoning'
+            ELSE 'Other'
+        END AS disease_category
+        FROM `fyp-project-451413.mimic_iii_local.DIAGNOSES_ICD`
+        WHERE REPLACE(icd9_code, ".", "") = @icd_code
+        LIMIT 1
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("icd_code", "STRING", icd_code_clean)
+            ]
+        )
+
+        results = client.query(query, job_config=job_config).result()
+        row = next(results, None)
+        if row:
+            return row.disease_category
+    except Exception as e:
+        logger.warning(f"BigQuery category lookup failed: {e}")
+    return "Other"
