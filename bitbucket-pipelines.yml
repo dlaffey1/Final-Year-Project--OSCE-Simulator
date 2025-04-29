@@ -1,0 +1,752 @@
+# Define these Variables in the Bitbucket Repository Settings - Repository Variables:
+#   PROJECT_FOLDER: "nmif"                                      #Project folder - new root
+#   DTIF_BACKEND_DIR: "dtif_backend"                            #Django project directory
+#   DOCKER_FILES_DIR: "docker/zap"                                #Docker ZAP directory
+#   DOCKER_IMAGE_TAG: "dtif_backend:latest"                     #Docker image tag
+#   ARTIFACT_NAME: "dtif_backend_image.tar"                     #Artifact name for all steps - Can be changed
+#   FIXED_ARTIFACT_NAME: "fixed_artifact.tar"                   #Fixed artifact name for all steps- KEEP THIS SAME IN ALL REPOSITORIES
+#   DOCKER_COMPOSE_DIRECTORY: "nmif/docker/docker-compose" # NEW: Directory containing docker-compose files, relative to repo root
+#   DJANGO_SETTINGS_MODULE: "dtif_backend.settings"             #Django settings module path from project folder
+#   DJANGO_URLCONF: "dtif_backend.urls"                         #Django URL configuration path from project folder
+#   DJANGO_APPS: "AUTO-POPULATES" -runs generate_django_apps.sh to generate app routes - scans top level directories in app - add to exclude list in generate_django_apps.sh file if adding directory which isnt an app
+#   REPOSITORY: "dtif-nsspi-wp5.1.4-network-interface"                                     #Bitbucket repository name
+#   NETWORK_NAME: "app-network"                                 #Docker compose network
+#   BIRBUCKET_USERNAME: "mbryonics"                             #Bitbucket username 
+#   BIRBUCKET_APP_PASSWORD: "app_password"                      #Bitbucket app password
+# (Other variables such as BITBUCKET_CLONE_DIR, BITBUCKET_USERNAME, BITBUCKET_APP_PASSWORD are automatically injected)
+image: atlassian/default-image:latest
+
+pipelines:
+  default:
+    - step:
+        name: "Search for requirements.txt and Build Docker Image"
+        script:
+          - cd ${PROJECT_FOLDER}
+          - docker system prune -f
+          - cd "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+          - export DOCKERFILE_PATH="${DOCKER_FILES_DIR}/Dockerfile"
+          - echo "DOCKERFILE_PATH is ${DOCKERFILE_PATH}"
+          - docker build -t "${DOCKER_IMAGE_TAG}" -f "${DOCKERFILE_PATH}" .
+          - BUILD_STATUS=$?
+          - echo "Docker build exit code ${BUILD_STATUS}"
+          - |
+              if [ "$BUILD_STATUS" -ne 0 ]; then
+                echo "❌ Docker build failed with exit code ${BUILD_STATUS}"
+                exit 1
+              fi
+          - echo "✅ Docker build succeeded. Saving the image..."
+          - docker save "${DOCKER_IMAGE_TAG}" > "${ARTIFACT_NAME}"
+          - SAVE_STATUS=$?
+          - echo "Docker save exit code ${SAVE_STATUS}"
+          - |
+              if [ "$SAVE_STATUS" -ne 0 ]; then
+                echo "❌ Docker save failed with exit code ${SAVE_STATUS}"
+                exit 1
+              fi
+          - echo "✅ Docker image saved successfully as ${ARTIFACT_NAME}"
+          - echo "🐳 Docker image built and tagged as ${DOCKER_IMAGE_TAG}"
+          # Move the saved artifact to the workspace root using the fixed artifact name variable
+          - mv "${ARTIFACT_NAME}" "$BITBUCKET_CLONE_DIR/${FIXED_ARTIFACT_NAME}"
+          - echo "Listing files in the workspace after moving artifact:"
+          - ls -la "$BITBUCKET_CLONE_DIR"
+        services:
+          - docker
+        artifacts:
+          - fixed_artifact.tar
+
+    - step:
+        name: "Upload Docker Image"
+        size: 2x
+        script:
+          - echo "Loading Docker image artifact..."
+          - docker load < "${FIXED_ARTIFACT_NAME}"
+          - echo "Compressing Docker image artifact..."
+          - gzip "${FIXED_ARTIFACT_NAME}"
+          - echo "🚀 Uploading ${FIXED_ARTIFACT_NAME}.gz..."
+          - pipe: atlassian/bitbucket-upload-file:0.7.4
+            variables:
+              BITBUCKET_USERNAME: "${BITBUCKET_USERNAME}"
+              BITBUCKET_APP_PASSWORD: "${BITBUCKET_APP_PASSWORD}"
+              FILENAME: "${FIXED_ARTIFACT_NAME}.gz"
+              ACCOUNT: "mbryonics_workspace"
+              REPOSITORY: "${REPOSITORY}"
+              DESTINATION_PATH: "downloads/${FIXED_ARTIFACT_NAME}.gz"
+        services:
+          - docker
+
+    # - step:
+    #     name: "Generate Django Apps Environment Variable"
+    #     script:
+    #       - echo "Changing into project folder ${PROJECT_FOLDER}..."
+    #       - cd "${BITBUCKET_CLONE_DIR}/${PROJECT_FOLDER}"
+    #       - echo "Setting execute permission on generate_django_apps.sh..."
+    #       - chmod +x generate_django_apps.sh
+    #       - echo "Running generate_django_apps.sh..."
+    #       - ./generate_django_apps.sh
+    #       - echo "Sourcing generated Django apps environment variables..."
+    #       - echo "Checking if env_vars.sh exists..."
+    #       - ls -la "${BITBUCKET_CLONE_DIR}/env_vars.sh"  # Ensure it's in the root directory
+    #       - cat "${BITBUCKET_CLONE_DIR}/env_vars.sh"  # Display contents to check if DJANGO_APPS is set
+    #       - source "${BITBUCKET_CLONE_DIR}/env_vars.sh"
+    #       - echo "DJANGO_APPS is set to $DJANGO_APPS"
+    #     artifacts:
+    #       - env_vars.sh  # Correct artifact
+
+    # - step:
+    #     name: "Run Functional Tests"
+    #     script:
+    #       - echo "Listing workspace contents before loading artifact:"
+    #       - ls -la "$BITBUCKET_CLONE_DIR"
+    #       - echo "Loading Docker image artifact..."
+    #       - docker load < "$BITBUCKET_CLONE_DIR/${FIXED_ARTIFACT_NAME}"
+    #       - echo "🔍 Searching for functional_tests directory..."
+    #       - FUNCTIONAL_TESTS_DIR=$(find "$BITBUCKET_CLONE_DIR" -type d -path "*/tests/functional_tests" | head -n 1)
+    #       - if [ -z "$FUNCTIONAL_TESTS_DIR" ]; then echo "❌ Functional tests directory not found!" && exit 1; fi
+    #       - echo "✅ Found functional_tests directory $FUNCTIONAL_TESTS_DIR"
+    #       # Convert the detected path to match the container's structure
+    #       - FUNCTIONAL_TESTS_DIR_IN_CONTAINER=${FUNCTIONAL_TESTS_DIR#"$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"}
+    #       - FUNCTIONAL_TESTS_DIR_IN_CONTAINER="/app${FUNCTIONAL_TESTS_DIR_IN_CONTAINER}"
+    #       - echo "Using functional tests directory inside the container $FUNCTIONAL_TESTS_DIR_IN_CONTAINER"
+    #       - echo "🔍 Running functional tests..."
+    #       - export DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
+    #       - export DJANGO_URLCONF=${DJANGO_URLCONF}
+    #       - source "${BITBUCKET_CLONE_DIR}/env_vars.sh"
+    #       - echo "Detected Django apps $DJANGO_APPS"
+    #       - export COVERAGE_FILE=.coverage.functional
+    #       - |
+    #           docker run --rm -v "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}:/app" -w /app \
+    #             -e DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE} \
+    #             -e DJANGO_URLCONF=${DJANGO_URLCONF} \
+    #             -e DJANGO_APPS="${DJANGO_APPS}" \
+    #             -e PYTHONPATH=/app \
+    #             -e COVERAGE_FILE=${COVERAGE_FILE} \
+    #             ${DOCKER_IMAGE_TAG} \
+    #             pytest "$FUNCTIONAL_TESTS_DIR_IN_CONTAINER" --maxfail=1 --disable-warnings -v --cov=app
+    #       - echo "Listing files in the mounted directory after tests:"
+    #       - ls -la
+    #       - echo "Moving coverage file to repository root..."
+    #       - mv "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/.coverage.functional" "$BITBUCKET_CLONE_DIR/.coverage.functional"
+    #       - echo "Listing files in repository root after move:"
+    #       - ls -la "$BITBUCKET_CLONE_DIR"
+    #     services:
+    #       - docker
+    #     artifacts:
+    #       - .coverage.functional
+
+
+    # - step:
+    #     name: "Run Performance Tests with Gatling"
+    #     script:
+    #       - echo "Loading Docker image artifact..."
+    #       - docker load < "${FIXED_ARTIFACT_NAME}"
+    #       - source "${BITBUCKET_CLONE_DIR}/env_vars.sh"
+    #       - echo "Detected Django apps $DJANGO_APPS"
+    #       - echo "Starting services with docker-compose..."
+    #       - echo "Installing Docker Compose..."
+    #       - apt-get update && apt-get install -y curl
+    #       - curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    #       - chmod +x /usr/local/bin/docker-compose
+    #       # Change into the mounted project folder so docker-compose finds its configuration file
+    #       - cd "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+    #       - echo "Starting Docker Compose services..."
+    #       - docker-compose up -d
+    #       # Apply migrations
+    #       - echo "Applying migrations..."
+    #       - docker-compose exec -T web python manage.py migrate
+    #       # Debug: Check if the web service is running
+    #       - echo "Checking if the web service is running..."
+    #       - docker-compose ps
+    #       - echo "Web service logs:"
+    #       - docker-compose logs web
+    #       # Debug: Check if Django is accessible from within the web container
+    #       - echo "Checking if Django is accessible from within the web container..."
+    #       - docker-compose exec -T web curl -X GET http://localhost:8000 || echo "Django is not accessible from within the web container"
+    #       # Debug: Check if Django is accessible from the host (Bitbucket Pipelines container)
+    #       - echo "Checking if Django is accessible from the host..."
+    #       - curl -X GET http://localhost:8000 || echo "Django is not accessible from the host"
+    #       # Debug: Check network connectivity between containers
+    #       - echo "Checking network connectivity between containers..."
+    #       - export NETWORK_NAME=${NETWORK_NAME:-app-network}
+    #       - docker run --rm --network "$NETWORK_NAME" curlimages/curl:7.85.0 curl -X GET http://web:8000 || echo "Django is not accessible from the Gatling container"
+    #       # Wait for Django to start (increase wait time if necessary)
+    #       - echo "Waiting for Django to start..."
+    #       - sleep 30
+    #       # Debug: Check if Django is accessible after waiting
+    #       - echo "Checking if Django is accessible after waiting..."
+    #       - docker run --rm --network "$NETWORK_NAME" curlimages/curl:7.85.0 curl -X GET http://web:8000 || echo "Django is still not accessible after waiting"
+    #       # Return to the Bitbucket clone directory
+    #       - cd "$BITBUCKET_CLONE_DIR"
+    #       # Search for performance_tests directory
+    #       - echo "🔍 Searching for performance_tests directory in the repository..."
+    #       - |
+    #           export PERFORMANCE_TESTS_DIR=$(find "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}" -type d -name "performance_tests" | head -n1)
+    #           if [ -z "$PERFORMANCE_TESTS_DIR" ]; then
+    #             echo "performance_tests directory not found!"; exit 1;
+    #           fi
+    #       - echo "Found performance_tests directory at $PERFORMANCE_TESTS_DIR"
+    #       # Set working directory variable for container
+    #       - export WORK_DIR=/app
+    #       - echo "WORK_DIR=$WORK_DIR"
+    #       # Search for a simulation file to determine the source directory
+    #       - echo "Searching for a simulation file to determine the source directory..."
+    #       - |
+    #           export SIM_FILE=$(find "$PERFORMANCE_TESTS_DIR" -type f -name "*Simulation.scala" | head -n1)
+    #           if [ -z "$SIM_FILE" ]; then
+    #             echo "No simulation file found in $PERFORMANCE_TESTS_DIR"; exit 1;
+    #           fi
+    #           export SIM_DIR=$(dirname "$SIM_FILE")
+    #       - echo "Simulation files found in directory $SIM_DIR"
+    #       # Download Gatling bundle
+    #       - echo "Downloading Gatling bundle..."
+    #       - curl -L -o gatling-bundle.zip https://repo1.maven.org/maven2/io/gatling/highcharts/gatling-charts-highcharts-bundle/3.9.0/gatling-charts-highcharts-bundle-3.9.0-bundle.zip
+    #       - unzip -q gatling-bundle.zip
+    #       - rm gatling-bundle.zip
+    #       - chmod -R 777 gatling-charts-highcharts-bundle-3.9.0
+    #       # Move Gatling bundle into the mounted repository
+    #       - echo "Moving Gatling bundle into the mounted repository..."
+    #       - mv gatling-charts-highcharts-bundle-3.9.0 "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/"
+    #       # Copy simulation files to Gatling bundle
+    #       - echo "Copying all simulation files from $SIM_DIR to Gatling bundle..."
+    #       - mkdir -p "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/gatling-charts-highcharts-bundle-3.9.0/user-files/simulations/tests/performance_tests"
+    #       - cp $SIM_DIR/*.scala "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/gatling-charts-highcharts-bundle-3.9.0/user-files/simulations/tests/performance_tests/"
+    #       # Run Gatling simulations
+    #       - echo "Running Gatling simulations..."
+    #       - |
+    #           for sim_file in $(find "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/gatling-charts-highcharts-bundle-3.9.0/user-files/simulations/tests/performance_tests" -type f -name "*.scala"); do
+    #             SIM_CLASS=$(echo $sim_file | sed "s|$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/gatling-charts-highcharts-bundle-3.9.0/user-files/simulations/||" | sed 's/\.scala$//' | sed 's/\//./g')
+    #             echo "Running simulation: $SIM_CLASS"
+    #             # Pipe "1" to automatically select "Run the Simulation locally"
+    #             echo "1" | docker run --rm -i --network "$NETWORK_NAME" -v "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}:/app" -w /app openjdk:11 ./gatling-charts-highcharts-bundle-3.9.0/bin/gatling.sh -s $SIM_CLASS
+    #           done
+    #       # Check if performance reports were generated
+    #       - echo "Checking for performance reports..."
+    #       - |
+    #           REPORT_DIR="$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/gatling-charts-highcharts-bundle-3.9.0/results"
+    #           if [ -d "$REPORT_DIR" ] && [ "$(ls -A $REPORT_DIR)" ]; then
+    #             echo "Performance report(s) generated successfully."
+    #           else
+    #             echo "❌ Performance report not generated!"
+    #             exit 1
+    #           fi
+    #       # Collect Gatling reports and create an archive
+    #       - echo "Collecting Gatling reports..."
+    #       - mkdir -p "$BITBUCKET_CLONE_DIR/downloads/gatling_reports"
+    #       - cp -r "$REPORT_DIR/"* "$BITBUCKET_CLONE_DIR/downloads/gatling_reports/"
+    #       - echo "Creating a consolidated performance report archive..."
+    #       - tar -czf "$BITBUCKET_CLONE_DIR/downloads/gatling_reports.tar.gz" -C "$BITBUCKET_CLONE_DIR/downloads" gatling_reports
+    #       - echo "Archive created at downloads/gatling_reports.tar.gz"
+    #       # Stop services
+    #       - echo "Stopping services..."
+    #       - cd "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+    #       - docker-compose down
+    #       - cd "$BITBUCKET_CLONE_DIR"
+    #       # 🚀 Upload performance reports archive to Bitbucket Downloads folder
+    #       - echo "🚀 Uploading performance reports archive..."
+    #       - pipe: atlassian/bitbucket-upload-file:0.3.0
+    #         variables:
+    #           BITBUCKET_USERNAME: "${BITBUCKET_USERNAME}"
+    #           BITBUCKET_APP_PASSWORD: "${BITBUCKET_APP_PASSWORD}"
+    #           FILENAME: "downloads/gatling_reports.tar.gz"
+    #           ACCOUNT: "mbryonics_workspace"
+    #           REPOSITORY: "${REPOSITORY}"
+    #     services:
+    #       - docker
+    #     artifacts:
+    #       - downloads/gatling_reports/**
+    #       - downloads/gatling_reports.tar.gz
+
+
+    # - step:
+    #     name: "Run Input Validation Tests"
+    #     script:
+    #       - echo "Listing workspace contents before loading artifact:"
+    #       - ls -la
+    #       - source "${BITBUCKET_CLONE_DIR}/env_vars.sh"
+    #       - echo "Detected Django apps $DJANGO_APPS"
+    #       - echo "Loading Docker image artifact..."
+    #       - docker load < "${FIXED_ARTIFACT_NAME}"
+    #       - echo "Setting PYTHONPATH to include ${PROJECT_FOLDER} folder..."
+    #       - export PYTHONPATH="$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+    #       - echo "🔍 Searching for input_validation directory..."
+    #       - chmod -R 777 "$BITBUCKET_CLONE_DIR"
+    #       - |
+    #           export INPUT_VALIDATION_DIR=/app/tests/input_validation
+    #       - if [ -z "$INPUT_VALIDATION_DIR" ]; then
+    #             echo "input_validation directory not found!";
+    #             exit 1;
+    #         fi
+    #       - echo "Found input_validation directory at $INPUT_VALIDATION_DIR"
+    #       - echo "🔍 Running input validation tests..."
+    #       - echo "INPUT_VALIDATION_DIR=$INPUT_VALIDATION_DIR"
+    #       - export DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
+    #       - echo "Using DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE"
+    #       - export DJANGO_URLCONF=${DJANGO_URLCONF}
+    #       - echo "Using DJANGO_URLCONF=$DJANGO_URLCONF"
+    #       - export COVERAGE_FILE=.coverage.input
+    #       - echo "Running pytest with COVERAGE_FILE set to $COVERAGE_FILE"
+    #       - |
+    #           docker run --rm \
+    #             -v "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}:/app" \
+    #             -w /app \
+    #             -e DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE} \
+    #             -e DJANGO_URLCONF=${DJANGO_URLCONF} \
+    #             -e DJANGO_APPS="${DJANGO_APPS}" \
+    #             -e PYTHONPATH=/app \
+    #             -e COVERAGE_FILE=${COVERAGE_FILE} \
+    #             ${DOCKER_IMAGE_TAG} \
+    #             pytest ${INPUT_VALIDATION_DIR} --maxfail=1 --disable-warnings -v --cov=app
+    #       - echo "Listing files after tests:"
+    #       - ls -la
+    #       - echo "Moving coverage file to repository root..."
+    #       - mv "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/.coverage.input" "$BITBUCKET_CLONE_DIR/.coverage.input"
+    #       - echo "Listing files in repository root after move:"
+    #       - ls -la "$BITBUCKET_CLONE_DIR"
+    #     services:
+    #       - docker
+    #     artifacts:
+    #       - .coverage.input
+
+    # - step:
+    #     name: "Run Security Tests"
+    #     script:
+    #       - echo "Listing workspace contents before loading artifact:"
+    #       - ls -la
+    #       - source "${BITBUCKET_CLONE_DIR}/env_vars.sh"
+    #       - echo "Detected Django apps $DJANGO_APPS"
+    #       - echo "Loading Docker image artifact..."
+    #       - docker load < "${FIXED_ARTIFACT_NAME}"
+    #       - echo "Setting PYTHONPATH to include ${PROJECT_FOLDER} folder..."
+    #       - export PYTHONPATH="$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+    #       - echo "🔍 Searching for security_tests directory..."
+    #       - SECURITY_TESTS_DIR=$(find "$BITBUCKET_CLONE_DIR" -type d -path "*/tests/security_tests" | head -n 1)
+    #       - if [ -z "$SECURITY_TESTS_DIR" ]; then echo "❌ Security tests directory not found!" && exit 1; fi
+    #       - echo "✅ Found security_tests directory $SECURITY_TESTS_DIR"
+    #       - SECURITY_TESTS_DIR_IN_CONTAINER=${SECURITY_TESTS_DIR#"$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"}
+    #       - SECURITY_TESTS_DIR_IN_CONTAINER="/app${SECURITY_TESTS_DIR_IN_CONTAINER}"
+    #       - echo "Using security tests directory inside the container $SECURITY_TESTS_DIR_IN_CONTAINER"
+    #       - echo "🔍 Running security tests..."
+    #       - export DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
+    #       - echo "Using DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE"
+    #       - export DJANGO_URLCONF=${DJANGO_URLCONF}
+    #       - echo "Using DJANGO_URLCONF=$DJANGO_URLCONF"
+    #       - export COVERAGE_FILE=.coverage.security
+    #       - echo "Running pytest with COVERAGE_FILE set to $COVERAGE_FILE"
+    #       - |
+    #           docker run --rm \
+    #             -v "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}:/app" \
+    #             -w /app \
+    #             -e DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE} \
+    #             -e DJANGO_URLCONF=${DJANGO_URLCONF} \
+    #             -e DJANGO_APPS="${DJANGO_APPS}" \
+    #             -e PYTHONPATH=/app \
+    #             -e COVERAGE_FILE=${COVERAGE_FILE} \
+    #             ${DOCKER_IMAGE_TAG} \
+    #             pytest ${SECURITY_TESTS_DIR_IN_CONTAINER} --maxfail=1 --disable-warnings -v --cov=app
+    #       - echo "Listing files after tests:"
+    #       - ls -la
+    #       - echo "Moving coverage file to repository root..."
+    #       - mv "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/.coverage.security" "$BITBUCKET_CLONE_DIR/.coverage.security"
+    #       - echo "Listing files in repository root after move:"
+    #       - ls -la "$BITBUCKET_CLONE_DIR"
+    #     services:
+    #       - docker
+    #     artifacts:
+    #       - .coverage.security
+
+
+  
+    # - step:
+    #       name: "Run Integration Tests with Docker Compose"
+    #       services:
+    #         - docker
+    #       script:
+    #         # Define absolute paths based on variables for clarity
+    #         # --- Uses EXISTING variable: PROJECT_FOLDER ---
+    #         - export PROJECT_FOLDER_ABS_PATH="$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+    #         # --- Uses NEW variable: DOCKER_COMPOSE_DIRECTORY to construct the path ---
+    #         - export DOCKER_COMPOSE_FILE_ABS_PATH="$BITBUCKET_CLONE_DIR/${DOCKER_COMPOSE_DIRECTORY}/integration-docker-compose.yml" # Fixed filename appended
+    #         # --- Uses EXISTING variable: FIXED_ARTIFACT_NAME ---
+    #         - export DOCKER_IMAGE_ARTIFACT_ABS_PATH="$BITBUCKET_CLONE_DIR/${FIXED_ARTIFACT_NAME}"
+    #         # --- Define coverage destination path using HARDCODED artifact name ---
+    #         - export COVERAGE_FILE_DEST_ABS_PATH="$BITBUCKET_CLONE_DIR/.coverage.integration" # Hardcoded name
+    #         # Assumes coverage file appears as '.coverage' in the PROJECT_FOLDER after tests run
+    #         - export COVERAGE_FILE_SOURCE_ABS_PATH="${PROJECT_FOLDER_ABS_PATH}/.coverage" # Source filename assumed standard
+
+    #         - echo "Loading Docker image artifact from ${DOCKER_IMAGE_ARTIFACT_ABS_PATH}..."
+    #         # --- Uses EXISTING variable: FIXED_ARTIFACT_NAME (via derived var) ---
+    #         - docker load < "${DOCKER_IMAGE_ARTIFACT_ABS_PATH}"
+
+    #         - echo "Installing Docker Compose (Consider using an image with it pre-installed)..."
+    #         - apt-get update && apt-get install -y curl jq
+    #         - curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    #         - chmod +x /usr/local/bin/docker-compose
+    #         - docker-compose --version
+
+    #         - echo "Project folder absolute path ${PROJECT_FOLDER_ABS_PATH}" # Uses PROJECT_FOLDER
+    #         - echo "Using Integration Compose file absolute path ${DOCKER_COMPOSE_FILE_ABS_PATH}" # Constructed using DOCKER_COMPOSE_DIRECTORY
+
+    #         # --- Change into Project directory ---
+    #         # --- Uses EXISTING variable: PROJECT_FOLDER (via derived var) ---
+    #         - cd "$PROJECT_FOLDER_ABS_PATH"
+    #         - echo "Current directory set to $(pwd)"
+
+    #         # --- Run Migrations ---
+    #         # --- Path constructed using NEW variable: DOCKER_COMPOSE_DIRECTORY ---
+    #         - echo "Starting DB and Web services for migration using ${DOCKER_COMPOSE_FILE_ABS_PATH}..."
+    #         - docker-compose -f "${DOCKER_COMPOSE_FILE_ABS_PATH}" up -d db-test web-test # Service names hardcoded (specific to compose file)
+    #         - echo "Waiting for services to stabilize before migration..."
+    #         - sleep 15
+
+    #         # Check if web service started
+    #         # --- Path constructed using NEW variable: DOCKER_COMPOSE_DIRECTORY ---
+    #         - |
+    #           if [ "$(docker-compose -f "${DOCKER_COMPOSE_FILE_ABS_PATH}" ps -q web-test)" == "" ] || [ "$(docker ps -q --filter status=running --filter name=web-test)" == "" ]; then
+    #             echo "❌ Web service (web-test) failed to start. Check logs."
+    #             docker-compose -f "${DOCKER_COMPOSE_FILE_ABS_PATH}" logs db-test web-test
+    #             exit 1
+    #           fi
+
+    #         - echo "Running database migrations..."
+    #         # --- Path constructed using NEW variable: DOCKER_COMPOSE_DIRECTORY ---
+    #         # Assumes 'web-test' service has DJANGO_SETTINGS_MODULE etc., set in its environment via compose file
+    #         - docker-compose -f "${DOCKER_COMPOSE_FILE_ABS_PATH}" exec -T web-test python manage.py migrate # Command hardcoded (specific to framework)
+    #         - MIGRATE_STATUS=$?
+    #         - |
+    #           if [ "$MIGRATE_STATUS" -ne 0 ]; then
+    #             echo "❌ Database migration failed!"
+    #             docker-compose -f "${DOCKER_COMPOSE_FILE_ABS_PATH}" logs web-test # Path constructed using DOCKER_COMPOSE_DIRECTORY
+    #             exit 1
+    #           fi
+    #         - echo "✅ Database migrations completed."
+
+    #         # --- Run Integration Tests ---
+    #         # --- Path constructed using NEW variable: DOCKER_COMPOSE_DIRECTORY ---
+    #         - echo "Running integration tests via integration-tester service..."
+    #         # Assumes 'integration-tester' service in the compose file runs the tests
+    #         - docker-compose -f "${DOCKER_COMPOSE_FILE_ABS_PATH}" up --build --abort-on-container-exit --exit-code-from integration-tester # Service name hardcoded
+    #         - TEST_EXIT_CODE=$?
+
+    #         # --- Collect Coverage ---
+    #         # Current directory is still $PROJECT_FOLDER_ABS_PATH
+    #         - echo "Checking for coverage file at ${COVERAGE_FILE_SOURCE_ABS_PATH}..." # Source filename assumed standard
+    #         - |
+    #           if [ -f "$COVERAGE_FILE_SOURCE_ABS_PATH" ]; then
+    #             # --- Use HARDCODED destination path variable ---
+    #             echo "Coverage file found. Moving to ${COVERAGE_FILE_DEST_ABS_PATH}" # Uses hardcoded .coverage.integration
+    #             mv "$COVERAGE_FILE_SOURCE_ABS_PATH" "$COVERAGE_FILE_DEST_ABS_PATH"
+    #             echo "Contents of repository root:"
+    #             ls -la "$BITBUCKET_CLONE_DIR" # Show root dir contents including the moved coverage file
+    #           else
+    #             echo "⚠️ Coverage file ${COVERAGE_FILE_SOURCE_ABS_PATH} not found in $(pwd)."
+    #             # exit 1 # Optional: Fail if coverage missing
+    #           fi
+
+    #         # Optional: Explicit Cleanup
+    #         - echo "Cleaning up Docker Compose services..."
+    #         # --- Path constructed using NEW variable: DOCKER_COMPOSE_DIRECTORY ---
+    #         - docker-compose -f "${DOCKER_COMPOSE_FILE_ABS_PATH}" down -v --remove-orphans || echo "Cleanup command failed, continuing..."
+
+    #         # Return to original directory (Bitbucket workspace root)
+    #         - cd "$BITBUCKET_CLONE_DIR"
+    #         - echo "Current directory reset to $(pwd)"
+
+    #         # Ensure script returns the test exit code
+    #         - |
+    #           if [ "$TEST_EXIT_CODE" -ne 0 ]; then
+    #             echo "❌ Integration tests failed with exit code $TEST_EXIT_CODE"
+    #             exit $TEST_EXIT_CODE
+    #           else
+    #             echo "✅ Integration tests passed."
+    #           fi
+    #       artifacts:
+    #         # --- Use HARDCODED artifact name ---
+    #         - ".coverage.integration"
+
+    # - step:
+    #     name: "Merge and Upload Coverage Report"
+    #     script:
+    #       - source "${BITBUCKET_CLONE_DIR}/env_vars.sh"
+    #       - echo "Detected Django apps $DJANGO_APPS"
+    #       - echo "Updating package list and installing curl..."
+    #       - apt-get update && apt-get install -y curl
+    #       - echo "Loading Docker image artifact..."
+    #       - docker load < "${FIXED_ARTIFACT_NAME}"
+    #       - echo "Merging coverage data files..."
+    #       - find . -maxdepth 1 -name ".coverage.*" -exec cp {} . \;
+    #       - ls -la
+    #       - echo "Combining coverage data..."
+    #       - |
+    #           docker run --rm \
+    #             -v "$BITBUCKET_CLONE_DIR:$BITBUCKET_CLONE_DIR" \
+    #             -w $BITBUCKET_CLONE_DIR \
+    #             -e DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE \
+    #             -e DJANGO_URLCONF=$DJANGO_URLCONF \
+    #             -e DJANGO_APPS="${DJANGO_APPS}" \
+    #             -e PYTHONPATH=$BITBUCKET_CLONE_DIR \
+    #             -e COVERAGE_FILE=$COVERAGE_FILE \
+    #             ${DOCKER_IMAGE_TAG} \
+    #             python3 -m coverage combine
+    #       - echo "Generating HTML coverage report..."
+    #       - |
+    #           docker run --rm \
+    #             -v "$BITBUCKET_CLONE_DIR:$BITBUCKET_CLONE_DIR" \
+    #             -w $BITBUCKET_CLONE_DIR \
+    #             -e DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE \
+    #             -e DJANGO_URLCONF=$DJANGO_URLCONF \
+    #             -e DJANGO_APPS="${DJANGO_APPS}" \
+    #             -e PYTHONPATH=$BITBUCKET_CLONE_DIR \
+    #             -e COVERAGE_FILE=$COVERAGE_FILE \
+    #             ${DOCKER_IMAGE_TAG} \
+    #             python3 -m coverage html -d htmlcov
+    #       - ls -la htmlcov
+    #       - echo "🚀 Uploading HTML coverage report..."
+    #       - pipe: atlassian/bitbucket-upload-file:0.3.0
+    #         variables:
+    #           BITBUCKET_USERNAME: "${BITBUCKET_USERNAME}"
+    #           BITBUCKET_APP_PASSWORD: "${BITBUCKET_APP_PASSWORD}"
+    #           FILENAME: "htmlcov/index.html"
+    #           ACCOUNT: "mbryonics_workspace"
+    #           REPOSITORY: "${REPOSITORY}"
+    #     services:
+    #       - docker
+    #     artifacts:
+    #       - htmlcov/**
+
+    # - step:
+    #     name: "Run License Compliance Check"
+    #     script:
+    #       - echo "Loading Docker image artifact..."
+    #       - docker load < "${FIXED_ARTIFACT_NAME}"
+    #       - echo "Setting PYTHONPATH to include ${PROJECT_FOLDER} folder..."
+    #       - export PYTHONPATH="$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+    #       - echo "🔎 Running license compliance check..."
+    #       # Mount the entire repository so the output file is created in the root (/app)
+    #       - docker run --rm -v "$BITBUCKET_CLONE_DIR:/app" -w /app ${DOCKER_IMAGE_TAG} pip-licenses --format=html --output-file=license_report.html
+    #       - echo "Listing files after license compliance check in repository root:"
+    #       - ls -la
+    #     services:
+    #       - docker
+    #     artifacts:
+    #       - license_report.html
+
+    # - step:
+    #     name: "Upload Reports"
+    #     script:
+    #       - echo "Loading Docker image artifact..."
+    #       - docker load < "${FIXED_ARTIFACT_NAME}"
+    #       - echo "Setting PYTHONPATH to include ${PROJECT_FOLDER} folder..."
+    #       - export PYTHONPATH="$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+    #       - echo "🚀 Uploading reports..."
+    #       - pipe: atlassian/bitbucket-upload-file:0.3.0
+    #         variables:
+    #           BITBUCKET_USERNAME: "${BITBUCKET_USERNAME}"
+    #           BITBUCKET_APP_PASSWORD: "${BITBUCKET_APP_PASSWORD}"
+    #           FILENAME: "license_report.html"
+    #           ACCOUNT: "mbryonics_workspace"
+    #           REPOSITORY: "${REPOSITORY}"
+    #     services:
+    #       - docker
+
+    # - step:
+    #         name: "Build and Run ZAP Baseline Scan with Custom Docker Image (v1 Compose + DOCKER_HOST Fix)"
+    #         size: 2x
+    #         services:
+    #           - docker
+    #         script:
+    #           - echo "Changing to repository root..."
+    #           - cd "$BITBUCKET_CLONE_DIR"
+    #           - DOCKERFILE_PATH="$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/${DOCKER_FILES_DIR}/Dockerfile.zap"
+    #           - echo "Using Dockerfile at ${DOCKERFILE_PATH}"
+    #           - echo "Building custom ZAP Docker image..."
+    #           # Assuming the Dockerfile builds the image needed for the python script below
+    #           - docker build -t my-zap2docker:latest -f "${DOCKERFILE_PATH}" .
+    #           - echo "Verifying image architecture..."
+    #           - docker inspect my-zap2docker:latest --format '{{.Os}}/{{.Architecture}}'
+    #           - echo "Setting up Docker network..."
+    #           - export NETWORK_NAME=${NETWORK_NAME:-app-network}
+    #           - docker network create "$NETWORK_NAME" || true
+
+    #           - echo "Changing to project directory $BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+    #           - cd "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}"
+
+    #           - echo "Installing Docker Compose v1..."
+    #           - apt-get update && apt-get install -y curl || true # Ensure curl is available
+    #           - curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    #           - chmod +x /usr/local/bin/docker-compose
+    #           - echo "Docker Compose v1 installed:"
+    #           - docker-compose --version
+
+    #           # <<< FIX: Explicitly set DOCKER_HOST >>>
+    #           - if [ -z "$DOCKER_HOST" ]; then export DOCKER_HOST=unix:///var/run/docker.sock; echo "DOCKER_HOST was not set, exporting default ${DOCKER_HOST}"; else echo "DOCKER_HOST already set by environment ${DOCKER_HOST}"; fi
+    #           - echo "DOCKER_HOST set to ${DOCKER_HOST}"
+    #           # <<< End of FIX >>>
+
+    #           - echo "Starting Docker Compose services using v1..."
+    #           # This should now connect correctly via the DOCKER_HOST socket
+    #           - docker-compose up -d
+
+    #           - echo "Waiting for Django to start (using fixed sleep)..."
+    #           - sleep 30 # Original fixed wait
+
+    #           - echo "Verifying web service connectivity from within container..."
+    #           # This command uses docker-compose, so it should also respect DOCKER_HOST
+    #           - docker-compose exec -T web curl -X GET http://localhost:8000 || echo "Django not accessible from within the web container (localhost:8000)"
+
+    #           # Note: These original checks target web:8080, which might be incorrect if Django runs on 8000.
+    #           # Kept as per original script for this specific fix. Consider changing to 8000 if needed.
+    #           - echo "Checking network connectivity between containers (targeting web:8080)..."
+    #           - docker run --rm --network "$NETWORK_NAME" curlimages/curl:7.85.0 curl -X GET http://web:8000 || echo "..."
+    #           - echo "Waiting 30 seconds before re-checking connectivity (targeting web:8080)..."
+    #           - sleep 30 # Original fixed wait
+    #           - echo "Checking connectivity after waiting (targeting web:8080)..."
+    #           - docker run --rm --network "$NETWORK_NAME" curlimages/curl:7.85.0 curl -X GET http://web:8000 || echo "Django is still not accessible from the another container (web:8080)"
+    #           - echo "Returning to repository root..."
+    #           - cd "$BITBUCKET_CLONE_DIR"
+
+    #           - echo "Verifying /zap is writable (creating test.txt)..."
+    #           - docker run --rm -v "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}:/zap" -w /zap alpine sh -c "touch test.txt && ls -la"
+
+    #           - echo "Running ZAP scan using my-zap2docker image (original Python script)..."
+    #           - |
+    #             docker run --rm \
+    #               -v "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}:/zap" \
+    #               -w /zap \
+    #               --network "$NETWORK_NAME" \
+    #               -e DJANGO_SETTINGS_MODULE="$DJANGO_SETTINGS_MODULE" \
+    #               -e DJANGO_URLCONF="$DJANGO_URLCONF" \
+    #               -e DJANGO_APPS="$DJANGO_APPS" \
+    #               -e PYTHONPATH=/zap \
+    #               my-zap2docker:latest \
+    #               sh -c "echo 'Starting ZAP daemon with API key disabled...'; \
+    #                       /app/run-zap.sh -daemon -port 8080 -host 0.0.0.0 -config api.disablekey=true & \
+    #                       ZAP_PID=\$!; \
+    #                       echo 'ZAP daemon started with PID ' \$ZAP_PID; \
+    #                       echo 'Waiting 60 seconds for ZAP to initialize (fixed sleep)...'; \
+    #                       for i in \$(seq 1 60); do echo \"Waiting \$i seconds...\"; sleep 1; done; \
+    #                       echo 'Listing sites tree before spider scan:'; \
+    #                       curl -s http://localhost:8080/JSON/core/view/urls/; \
+    #                       echo 'Starting spider scan on target http://web:8000/ with recursion limited (maxDepth=1)...'; \
+    #                       curl -s \"http://localhost:8080/JSON/spider/action/scan/?url=http://web:8000/&recurse=true&maxDepth=1\"; \
+    #                       echo 'Waiting 30 seconds for spider scan to finish (fixed sleep)...'; sleep 30; \
+    #                       echo 'Listing sites tree after spider scan:'; \
+    #                       curl -s http://localhost:8080/JSON/core/view/urls/; \
+    #                       echo 'Starting scan using Python script targeting http://web:8000/'; \
+    #                       python3 /zap/zap-baseline.py -t http://web:8000/ -r /zap/zap_report.html; \
+    #                       echo 'Scan completed.'; \
+    #                       echo 'Listing contents of /zap after scan:'; ls -la /zap" || true # Original || true
+
+    #           - echo "Changing back to project directory for report check and upload..."
+    #           - cd "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}" # Change directory for relative path checks/uploads
+
+    #           - echo "Ensuring zap_report.html exists..."
+    #           # Check relative to current directory (project folder)
+    #           - if [ ! -f "zap_report.html" ]; then echo "No report file found in ${PWD}; creating empty zap_report.html"; touch "zap_report.html"; fi
+
+    #           # Original post-scan checks (again targeting web:8080)
+    #           - echo "Verifying connectivity from host after ZAP scan..."
+    #           - curl -X GET http://localhost:8080 || echo "Check target localhost:8080 failed (expected if ZAP container stopped)" # This likely checks ZAP API, might fail now.
+    #           - echo "Verifying connectivity from within ZAP container after scan (targeting web:8080)..."
+    #           - docker run --rm --network "$NETWORK_NAME" curlimages/curl:7.85.0 curl -X GET http://web:8080 || echo "Django not accessible from another container after scan (web:8080)"
+
+    #           - echo "Stopping services with docker-compose v1..."
+    #           # This should now work because DOCKER_HOST is set
+    #           - docker-compose -f "$BITBUCKET_CLONE_DIR/${PROJECT_FOLDER}/docker-compose.yml" down
+    #           - echo "Docker compose down command executed."
+
+    #           # cd - removed as we are already in the correct folder
+
+    #           - echo "Uploading ZAP report..."
+    #           - pipe: atlassian/bitbucket-upload-file:0.7.4
+    #             variables:
+    #               BITBUCKET_USERNAME: "${BITBUCKET_USERNAME}"
+    #               BITBUCKET_APP_PASSWORD: "${BITBUCKET_APP_PASSWORD}"
+    #               FILENAME: "zap_report.html" # Relative path from project folder
+    #               ACCOUNT: "mbryonics_workspace"
+
+      # Currently this step is trying to download too much records of vulnerabilities from NVD. This
+      # is causing the step to run out of memory and fail. The step is commented out for now and can be
+      # changed to look for a local version of the nvd repository. However since this is being reused in 
+      # different configurations it is better to leave it not importing from the local desktop
+      # - step:
+      #     name: "Run OWASP Dependency-Check"
+      #     size: 4x
+      #     script:
+      #       - echo "Loading Docker image artifact..."
+      #       - docker load < dtif_backend.tar
+      #       - source "${BITBUCKET_CLONE_DIR}/env_vars.sh"
+      #       - echo "Detected Django apps $DJANGO_APPS"  
+      #       - echo "⚠️ Running OWASP Dependency-Check with NVD API Key..."
+      #       - |
+      #           docker run --rm \
+      #             --memory=8g \
+      #             -v "$BITBUCKET_CLONE_DIR:$BITBUCKET_CLONE_DIR" \
+      #             -w "$BITBUCKET_CLONE_DIR" \
+      #             -e DJANGO_SETTINGS_MODULE=dtif_backend.dtif_backend.settings \
+      #             -e PYTHONPATH="$BITBUCKET_CLONE_DIR" \
+      #             -e DJANGO_APPS="${DJANGO_APPS}" \
+      #             -e NVD_API_KEY="$NVD_API_KEY" \
+      #             owasp/dependency-check:latest \
+      #             dependency-check.sh --project "Django Project" --scan . --exclude '**/tests' --severity HIGH,CRITICAL --format HTML --out oss_report.html --nvdApiKey "$NVD_API_KEY"
+      #       - echo "Listing files after OWASP Dependency-Check..."
+      #       - ls -la
+      #     services:
+      #       - docker
+      #     artifacts:
+      #       - oss_report.html
+       # - step:
+        #   name: "Run Unit Tests for NMIF" # Changed Name
+        #   services:
+        #     - docker
+        #   script:
+        #     - echo "Loading Docker image artifact..."
+        #     - docker load < dtif_backend.tar
+
+        #     # Define the unit test directory path *inside* the container's /app mount
+        #     - echo "🔍 Setting unit_tests directory relative to /app..."
+        #     - export UNIT_TESTS_DIR=/app/tests/unit_tests # <<< CHANGED: Target directory
+        #     # Removed check for directory existence as path is fixed relative to mount
+        #     - echo "Using unit tests directory $UNIT_TESTS_DIR"
+            
+        #     - echo "🔍 Running unit tests..."
+            
+        #     # Set Django environment variables (assuming unit tests might need them)
+        #     - export DJANGO_SETTINGS_MODULE=dtif_backend.settings
+        #     - echo "Using DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE"
+        #     - export DJANGO_URLCONF=dtif_backend.urls
+        #     - echo "Using DJANGO_URLCONF=$DJANGO_URLCONF"
+        #     - export DJANGO_USERS=users
+        #     - echo "Using DJANGO_USERS=$DJANGO_USERS"
+        #     - export DJANGO_APP=app # Assuming 'app' is the Django app name within 'nmif'
+        #     - echo "Using DJANGO_APP=$DJANGO_APP"
+            
+        #     # Define the unique coverage file name for this step
+        #     - export COVERAGE_FILE=.coverage.unit # <<< CHANGED: Coverage filename
+        #     - echo "Running pytest with COVERAGE_FILE set to $COVERAGE_FILE"
+            
+        #     # Run tests using the same docker run structure as Input Validation tests
+        #     - |
+        #           docker run --rm \
+        #             -v "$BITBUCKET_CLONE_DIR/nmif:/app" `# Mount source code to /app` \
+        #             -w /app `# Set working directory inside container` \
+        #             -e DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE \
+        #             -e DJANGO_URLCONF=$DJANGO_URLCONF \
+        #             -e DJANGO_USERS=$DJANGO_USERS \
+        #             -e DJANGO_APP=$DJANGO_APP \
+        #             -e PYTHONPATH=/app `# Set PYTHONPATH inside container` \
+        #             -e COVERAGE_FILE=$COVERAGE_FILE \
+        #             dtif_backend:latest \
+        #             pytest $UNIT_TESTS_DIR --maxfail=1 --disable-warnings -v --cov=app # <<< CHANGED: Target UNIT_TESTS_DIR
+        #             # ^^^ Calculate coverage for 'app' dir (mounted nmif) ^^^
+
+        #     # --- Coverage File Handling (mirrors Input Validation step) ---
+        #     - echo "Listing files in mounted directory ($BITBUCKET_CLONE_DIR/nmif) after tests:"
+        #     - ls -la "$BITBUCKET_CLONE_DIR/nmif" # Coverage file should appear here
+            
+        #     - echo "Moving coverage file ($COVERAGE_FILE) to repository root..."
+        #     # Move the specific coverage file from the mounted source dir to the repo root
+        #     - mv "$BITBUCKET_CLONE_DIR/nmif/$COVERAGE_FILE" "$BITBUCKET_CLONE_DIR/$COVERAGE_FILE" # <<< CHANGED: Source/Dest coverage filename
+            
+        #     - echo "Listing files in repository root ($BITBUCKET_CLONE_DIR) after move:"
+        #     - ls -la "$BITBUCKET_CLONE_DIR"
+        #   artifacts:
+        #     - .coverage.unit

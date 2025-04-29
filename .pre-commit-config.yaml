@@ -1,0 +1,42 @@
+#This precommit file runs on linux and has the start command: pre-commit run pytest --all-files
+# You can configure which tests this activates in the pytest.ini file
+repos:
+  - repo: local
+    hooks:
+      - id: pytest
+        name: "Run Django Tests"
+        language: python
+
+        # CHANGE: Use 'env' to set PYTHONPATH relative to the repo root
+        # This adds the 'nmif' directory to Python's search path before pytest runs.
+        entry: env PYTHONPATH=nmif pytest
+
+        # Args are passed to the final command (pytest)
+        args:
+          - "--maxfail=1"
+          - "--disable-warnings"
+          - "--verbose"
+
+        types: [python]
+        additional_dependencies:
+          - pytest==8.3.4
+          - pytest-django==4.8.0  # Verify this version
+          - Django==4.2.7
+          - djangorestframework==3.14.0
+          - django-cors-headers
+          # - fastapi==0.115.7
+          # - httpx==0.28.1
+          # - uvicorn==0.34.0
+          # - psycopg2-binary==2.9.6
+          - pydantic==2.10.6
+          # - pytest-cov==4.0.0
+          # - SQLAlchemy==2.0.31
+          # - python-dotenv==1.0.1
+
+        # Ensure DJANGO_SETTINGS_MODULE is still set correctly,
+        # preferably via pytest.ini or pyproject.toml:
+        # [pytest]
+        # DJANGO_SETTINGS_MODULE = dtif_backend.settings
+
+        pass_filenames: false
+        require_serial: true
