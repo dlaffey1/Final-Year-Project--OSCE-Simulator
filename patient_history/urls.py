@@ -16,7 +16,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 from django.contrib import admin
-from history.views import generate_history, ask_question, get_history_categories, get_conditions, generate_questions, get_general_condition_categories, get_conditions_by_category, get_conditions_by_category_profile, generate_history_with_profile, get_category_by_condition_profile
+from history.views import generate_history, ask_question, get_history_categories, get_conditions, generate_questions, get_general_condition_categories, get_conditions_by_category, get_conditions_by_category_profile, generate_history_with_profile, get_category_by_condition_profile, convert_mimic_to_icd, convert_icd_to_condition
 from history import views
 from django.conf import settings
 from django.conf.urls.static import static
@@ -28,6 +28,8 @@ urlpatterns = [
     path("ask-question/", ask_question, name="ask_question"),
     path("get-history-categories/", get_history_categories, name="get_history_categories"),
     path("get-conditions/", get_conditions, name="get_conditions"),
+    path("convert_mimic_to_icd/", convert_mimic_to_icd, name="convert_mimic_to_icd"),
+    path("convert_icd_to_condition/", convert_icd_to_condition, name="convert_icd_to_condition"),
     path('generate-questions/', generate_questions, name='generate_questions'),
     path('get_general_condition_categories/', get_general_condition_categories, name = 'get_general_condition_categories'),
     path('get_conditions_by_category/', get_conditions_by_category, name = 'get_conditions_by_category'),

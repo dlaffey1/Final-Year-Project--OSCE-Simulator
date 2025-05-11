@@ -1043,3 +1043,44 @@ def get_category_from_icd(client, icd_code: str) -> str:
     except Exception as e:
         logger.warning(f"BigQuery category lookup failed: {e}")
     return "Other"
+
+@csrf_exempt
+def convert_icd_to_condition(request):
+    """
+    Given an ICD-9 code (e.g. "425.1"), return the corresponding condition name.
+    Tries the JSON mapping first, then falls back to the D_ICD_DIAGNOSES BigQuery table.
+    """
+    code = request.GET.get("code", "").strip()
+    if not code:
+        return JsonResponse({"error": "Code parameter is required."}, status=400)
+
+    # 1) Try your JSON mapping
+    mapping_data = load_text2dt_mapping()
+    if mapping_data:
+        for entry in mapping_data:
+            icd_list = entry.get("mapped_mimic_group", {}).get("icd9_codes", [])
+            if code in icd_list or code.replace(".", "") in [c.replace(".", "") for c in icd_list]:
+                condition = entry["mapped_mimic_group"].get("mimic_condition")
+                return JsonResponse({"condition": condition}, status=200)
+
+    # 2) Fallback: BigQuery lookup
+    try:
+        client = bigquery.Client()
+        query = """
+          SELECT long_title
+          FROM `fyp-project-451413.mimic_iii_local.D_ICD_DIAGNOSES`
+          WHERE icd9_code = @code
+          LIMIT 1
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("code", "STRING", code)
+            ]
+        )
+        row = next(client.query(query, job_config=job_config).result(), None)
+        if row:
+            return JsonResponse({"condition": row.long_title}, status=200)
+    except Exception as e:
+        logger.error("BigQuery lookup failed in convert_icd_to_condition: %s", e)
+
+    return JsonResponse({"error": f"No condition found for ICD-9 code '{code}'."}, status=404)
